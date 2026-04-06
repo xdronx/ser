@@ -215,7 +215,12 @@ def get_processed_furniture_asset(asset_file: Path) -> Path:
 
 
 def _compose_room_with_furniture(
-    room_path: Path, furniture: dict, x: float, y: float, add_shadow: bool = True
+    room_path: Path,
+    furniture: dict,
+    x: float,
+    y: float,
+    add_shadow: bool = True,
+    scale: float = 1.0,
 ) -> tuple[Image.Image, dict]:
     image_rgba = Image.open(room_path).convert("RGBA")
     width, height = image_rgba.size
@@ -224,13 +229,15 @@ def _compose_room_with_furniture(
 
     asset_file = FURNITURE_DIR / furniture.get("asset_file", "")
     metadata: dict = {"anchor_point": (px, py), "furniture_box": None, "shadow_box": None}
+    scale = max(0.5, min(2.0, float(scale)))
     if asset_file.exists():
         processed_asset = get_processed_furniture_asset(asset_file)
         overlay = Image.open(processed_asset).convert("RGBA")
         ow, oh = overlay.size
-        target_w = max(80, min(int(width * 0.28), int(width * 0.6)))
-        scale = target_w / ow
-        target_h = max(80, int(oh * scale))
+        base_target_w = max(80, min(int(width * 0.28), int(width * 0.6)))
+        target_w = max(40, int(base_target_w * scale))
+        ratio = target_w / ow
+        target_h = max(40, int(oh * ratio))
         overlay = overlay.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
         if add_shadow:
@@ -293,8 +300,10 @@ def _build_openai_mask(size: tuple[int, int], boxes: list[tuple[int, int, int, i
     return mask
 
 
-def draw_mock_result(room_path: Path, furniture: dict, x: float, y: float) -> str:
-    image, metadata = _compose_room_with_furniture(room_path, furniture, x, y, add_shadow=True)
+def draw_mock_result(room_path: Path, furniture: dict, x: float, y: float, scale: float) -> str:
+    image, metadata = _compose_room_with_furniture(
+        room_path, furniture, x, y, add_shadow=True, scale=scale
+    )
     width, height = image.size
     px, py = metadata["anchor_point"]
     draw = ImageDraw.Draw(image)
@@ -319,11 +328,15 @@ def draw_mock_result(room_path: Path, furniture: dict, x: float, y: float) -> st
     return output_name
 
 
-def call_openai_image_edit(room_path: Path, furniture: dict, x: float, y: float) -> str:
+def call_openai_image_edit(
+    room_path: Path, furniture: dict, x: float, y: float, scale: float
+) -> str:
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY is empty. Add it to .env for openai mode.")
 
-    image, metadata = _compose_room_with_furniture(room_path, furniture, x, y, add_shadow=True)
+    image, metadata = _compose_room_with_furniture(
+        room_path, furniture, x, y, add_shadow=True, scale=scale
+    )
     width, height = image.size
     boxes: list[tuple[int, int, int, int]] = []
     for key in ("furniture_box", "shadow_box"):
@@ -445,7 +458,9 @@ def call_openai_image_edit(room_path: Path, furniture: dict, x: float, y: float)
     return output_name
 
 
-def call_external_webhook(room_path: Path, furniture: dict, x: float, y: float) -> str:
+def call_external_webhook(
+    room_path: Path, furniture: dict, x: float, y: float, scale: float
+) -> str:
     if not EXTERNAL_AI_WEBHOOK_URL:
         raise ValueError(
             "EXTERNAL_AI_WEBHOOK_URL is empty. Set it in .env for webhook mode."
@@ -458,7 +473,7 @@ def call_external_webhook(room_path: Path, furniture: dict, x: float, y: float) 
     payload = {
         "furniture_id": furniture["id"],
         "furniture_name": furniture["name"],
-        "placement": {"x": x, "y": y},
+        "placement": {"x": x, "y": y, "scale": scale},
         "room_image_base64": base64.b64encode(room_bytes).decode("utf-8"),
         "furniture_asset_base64": base64.b64encode(furniture_bytes).decode("utf-8"),
         "furniture_prompt": furniture.get("prompt", ""),
@@ -564,6 +579,7 @@ def api_render():
     furniture_id = (request.form.get("furniture_id") or "").strip()
     x_raw = (request.form.get("x") or "").strip()
     y_raw = (request.form.get("y") or "").strip()
+    scale_raw = (request.form.get("scale") or "1").strip()
 
     if not room_file or not room_file.filename:
         return jsonify({"error": "room_image file is required"}), 400
@@ -579,11 +595,14 @@ def api_render():
     try:
         x = float(x_raw)
         y = float(y_raw)
+        scale = float(scale_raw)
     except ValueError:
-        return jsonify({"error": "x and y must be numbers in range 0..1"}), 400
+        return jsonify({"error": "x, y and scale must be numbers"}), 400
 
     if x < 0 or x > 1 or y < 0 or y > 1:
         return jsonify({"error": "x and y must be in range 0..1"}), 400
+    if scale < 0.5 or scale > 2.0:
+        return jsonify({"error": "scale must be in range 0.5..2.0"}), 400
 
     room_ext = Path(room_file.filename).suffix.lower()
     upload_name = f"{uuid.uuid4().hex}{room_ext}"
@@ -592,11 +611,11 @@ def api_render():
 
     try:
         if GENERATION_PROVIDER == "webhook":
-            output_name = call_external_webhook(upload_path, furniture, x, y)
+            output_name = call_external_webhook(upload_path, furniture, x, y, scale)
         elif GENERATION_PROVIDER == "openai":
-            output_name = call_openai_image_edit(upload_path, furniture, x, y)
+            output_name = call_openai_image_edit(upload_path, furniture, x, y, scale)
         else:
-            output_name = draw_mock_result(upload_path, furniture, x, y)
+            output_name = draw_mock_result(upload_path, furniture, x, y, scale)
     except Exception as exc:
         return jsonify({"error": f"Generation failed: {exc}"}), 500
 

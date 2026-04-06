@@ -22,11 +22,21 @@ const uploadStatusText = document.getElementById("uploadStatusText");
 const canvasSurface = document.querySelector(".canvas-surface");
 
 let selectedRoomFile = null;
-let selectedPoint = null;
 let selectedFurnitureId = "";
 let furnitureItems = [];
 let selectedCategory = "all";
 let searchQuery = "";
+
+// Single active object on the scene (can be moved and resized)
+let sceneObject = null; // { furnitureId, x, y, scale }
+let sceneObjectEl = null;
+let sceneObjectImg = null;
+let sceneScaleLabel = null;
+let isDraggingSceneObject = false;
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
 
 function setStatus(text, isError = false) {
   statusText.textContent = text;
@@ -43,7 +53,7 @@ function updateEmptyHint() {
 }
 
 function updateRenderButtonState() {
-  renderBtn.disabled = !(selectedRoomFile && selectedPoint && selectedFurnitureId);
+  renderBtn.disabled = !(selectedRoomFile && sceneObject && sceneObject.furnitureId);
 }
 
 function resetResult() {
@@ -54,6 +64,10 @@ function resetResult() {
 
 function normalizeCategory(value) {
   return (value || "other").trim().toLowerCase() || "other";
+}
+
+function getFurnitureById(id) {
+  return furnitureItems.find((item) => item.id === id) || null;
 }
 
 function getFilteredItems() {
@@ -114,6 +128,8 @@ function renderFurnitureGrid() {
     const card = document.createElement("button");
     card.type = "button";
     card.className = `furniture-card ${item.id === selectedFurnitureId ? "active" : ""}`;
+    card.setAttribute("draggable", "true");
+    card.dataset.furnitureId = item.id;
 
     const preview = document.createElement("div");
     preview.className = "furniture-preview";
@@ -137,8 +153,21 @@ function renderFurnitureGrid() {
     card.addEventListener("click", () => {
       selectedFurnitureId = item.id;
       renderFurnitureGrid();
-      updateRenderButtonState();
-      setStatus(`Выбрано: ${item.name}`);
+      setStatus(`Выбрано: ${item.name}. Перетащи предмет на сцену.`);
+    });
+
+    card.addEventListener("dragstart", (event) => {
+      selectedFurnitureId = item.id;
+      renderFurnitureGrid();
+      if (event.dataTransfer) {
+        event.dataTransfer.setData("text/furniture-id", item.id);
+        event.dataTransfer.effectAllowed = "copy";
+      }
+      canvasSurface.classList.add("drop-active");
+    });
+
+    card.addEventListener("dragend", () => {
+      canvasSurface.classList.remove("drop-active");
     });
 
     furnitureGrid.appendChild(card);
@@ -157,9 +186,13 @@ async function loadFurnitureCatalog() {
   if (!furnitureItems.some((item) => item.id === selectedFurnitureId)) {
     selectedFurnitureId = furnitureItems[0]?.id || "";
   }
+  if (sceneObject && !furnitureItems.some((item) => item.id === sceneObject.furnitureId)) {
+    sceneObject = null;
+  }
 
   renderCategoryTabs();
   renderFurnitureGrid();
+  renderSceneObject();
   updateRenderButtonState();
   setStatus("Каталог загружен");
 }
@@ -168,9 +201,10 @@ function handleRoomFileChange(event) {
   const file = event.target.files?.[0];
   if (!file) {
     selectedRoomFile = null;
-    selectedPoint = null;
     roomPreview.removeAttribute("src");
     marker.hidden = true;
+    sceneObject = null;
+    removeSceneObjectElement();
     coordsText.textContent = "Точка не выбрана";
     updateEmptyHint();
     updateRenderButtonState();
@@ -178,13 +212,14 @@ function handleRoomFileChange(event) {
   }
 
   selectedRoomFile = file;
-  selectedPoint = null;
-  marker.hidden = true;
-  coordsText.textContent = "Точка не выбрана";
   roomPreview.src = URL.createObjectURL(file);
+  marker.hidden = true;
+  sceneObject = null;
+  removeSceneObjectElement();
+  coordsText.textContent = "Перетащи мебель на сцену";
   resetResult();
   updateEmptyHint();
-  setStatus("Фото загружено. Кликни в место установки мебели.");
+  setStatus("Фото загружено. Перетащи мебель из каталога на сцену.");
   updateRenderButtonState();
 }
 
@@ -194,61 +229,207 @@ function getImageDrawRect(imgElement) {
   if (!naturalW || !naturalH) return null;
 
   const rect = canvasSurface.getBoundingClientRect();
-  const scale = Math.min(rect.width / naturalW, rect.height / naturalH);
-  const drawW = naturalW * scale;
-  const drawH = naturalH * scale;
+  const fit = Math.min(rect.width / naturalW, rect.height / naturalH);
+  const drawW = naturalW * fit;
+  const drawH = naturalH * fit;
   const left = (rect.width - drawW) / 2;
   const top = (rect.height - drawH) / 2;
   return { left, top, drawW, drawH };
 }
 
-function handleCanvasClick(event) {
-  if (!selectedRoomFile || !roomPreview.getAttribute("src")) {
-    return;
-  }
-
+function eventToNormalized(clientX, clientY, clampOutside = false) {
   const drawRect = getImageDrawRect(roomPreview);
-  if (!drawRect) return;
+  if (!drawRect) return null;
 
   const surfaceRect = canvasSurface.getBoundingClientRect();
-  const sx = event.clientX - surfaceRect.left;
-  const sy = event.clientY - surfaceRect.top;
+  let sx = clientX - surfaceRect.left;
+  let sy = clientY - surfaceRect.top;
 
-  if (
-    sx < drawRect.left ||
-    sy < drawRect.top ||
-    sx > drawRect.left + drawRect.drawW ||
-    sy > drawRect.top + drawRect.drawH
-  ) {
+  if (!clampOutside) {
+    if (
+      sx < drawRect.left ||
+      sy < drawRect.top ||
+      sx > drawRect.left + drawRect.drawW ||
+      sy > drawRect.top + drawRect.drawH
+    ) {
+      return null;
+    }
+  }
+
+  sx = clamp(sx, drawRect.left, drawRect.left + drawRect.drawW);
+  sy = clamp(sy, drawRect.top, drawRect.top + drawRect.drawH);
+  return {
+    x: clamp((sx - drawRect.left) / drawRect.drawW, 0, 1),
+    y: clamp((sy - drawRect.top) / drawRect.drawH, 0, 1),
+  };
+}
+
+function ensureSceneObjectElement() {
+  if (sceneObjectEl) return;
+
+  sceneObjectEl = document.createElement("div");
+  sceneObjectEl.className = "scene-object";
+  sceneObjectEl.id = "sceneObject";
+
+  sceneObjectImg = document.createElement("img");
+  sceneObjectImg.alt = "Scene furniture object";
+  sceneObjectImg.draggable = false;
+  sceneObjectEl.appendChild(sceneObjectImg);
+
+  const controls = document.createElement("div");
+  controls.className = "scene-controls";
+
+  const minus = document.createElement("button");
+  minus.type = "button";
+  minus.textContent = "−";
+  minus.title = "Уменьшить";
+  minus.addEventListener("click", (event) => {
+    event.stopPropagation();
+    adjustSceneScale(-0.1);
+  });
+
+  sceneScaleLabel = document.createElement("span");
+  sceneScaleLabel.className = "scene-scale-label";
+  sceneScaleLabel.textContent = "100%";
+
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.textContent = "+";
+  plus.title = "Увеличить";
+  plus.addEventListener("click", (event) => {
+    event.stopPropagation();
+    adjustSceneScale(0.1);
+  });
+
+  controls.appendChild(minus);
+  controls.appendChild(sceneScaleLabel);
+  controls.appendChild(plus);
+  sceneObjectEl.appendChild(controls);
+
+  sceneObjectEl.addEventListener("pointerdown", (event) => {
+    if (event.target.closest(".scene-controls")) return;
+    isDraggingSceneObject = true;
+    sceneObjectEl.classList.add("dragging");
+    sceneObjectEl.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  sceneObjectEl.addEventListener("pointermove", (event) => {
+    if (!isDraggingSceneObject || !sceneObject) return;
+    const point = eventToNormalized(event.clientX, event.clientY, true);
+    if (!point) return;
+    sceneObject.x = point.x;
+    sceneObject.y = point.y;
+    renderSceneObject();
+    resetResult();
+    setStatus("Предмет перемещён");
+  });
+  sceneObjectEl.addEventListener("pointerup", (event) => {
+    isDraggingSceneObject = false;
+    sceneObjectEl.classList.remove("dragging");
+    try {
+      sceneObjectEl.releasePointerCapture(event.pointerId);
+    } catch {
+      // no-op
+    }
+  });
+  sceneObjectEl.addEventListener("pointercancel", () => {
+    isDraggingSceneObject = false;
+    sceneObjectEl.classList.remove("dragging");
+  });
+  sceneObjectEl.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const delta = event.deltaY > 0 ? -0.05 : 0.05;
+    adjustSceneScale(delta);
+  });
+
+  canvasSurface.appendChild(sceneObjectEl);
+}
+
+function removeSceneObjectElement() {
+  if (!sceneObjectEl) return;
+  sceneObjectEl.remove();
+  sceneObjectEl = null;
+  sceneObjectImg = null;
+  sceneScaleLabel = null;
+}
+
+function placeSceneObject(furnitureId, x, y, scale = 1) {
+  const item = getFurnitureById(furnitureId);
+  if (!item) return;
+  sceneObject = {
+    furnitureId,
+    x: clamp(x, 0, 1),
+    y: clamp(y, 0, 1),
+    scale: clamp(scale, 0.5, 2),
+  };
+  selectedFurnitureId = furnitureId;
+  renderFurnitureGrid();
+  renderSceneObject();
+  updateRenderButtonState();
+  resetResult();
+  coordsText.textContent = `Точка: x=${sceneObject.x.toFixed(3)}, y=${sceneObject.y.toFixed(3)}`;
+  setStatus(`Предмет "${item.name}" размещён на сцене`);
+}
+
+function renderSceneObject() {
+  if (!sceneObject || !selectedRoomFile) {
+    removeSceneObjectElement();
+    return;
+  }
+  const item = getFurnitureById(sceneObject.furnitureId);
+  const drawRect = getImageDrawRect(roomPreview);
+  if (!item || !drawRect) {
+    removeSceneObjectElement();
     return;
   }
 
-  const x = (sx - drawRect.left) / drawRect.drawW;
-  const y = (sy - drawRect.top) / drawRect.drawH;
-  selectedPoint = {
-    x: Math.min(1, Math.max(0, x)),
-    y: Math.min(1, Math.max(0, y)),
-  };
+  ensureSceneObjectElement();
+  if (!sceneObjectEl || !sceneObjectImg || !sceneScaleLabel) return;
 
-  marker.hidden = false;
-  marker.style.left = `${drawRect.left + selectedPoint.x * drawRect.drawW}px`;
-  marker.style.top = `${drawRect.top + selectedPoint.y * drawRect.drawH}px`;
-  coordsText.textContent = `Точка: x=${selectedPoint.x.toFixed(3)}, y=${selectedPoint.y.toFixed(3)}`;
-  setStatus("Точка выбрана, можно генерировать");
-  updateRenderButtonState();
+  const baseW = drawRect.drawW * 0.28;
+  const width = Math.max(40, Math.round(baseW * sceneObject.scale));
+  sceneObjectEl.style.width = `${width}px`;
+  sceneObjectEl.style.left = `${drawRect.left + sceneObject.x * drawRect.drawW}px`;
+  sceneObjectEl.style.top = `${drawRect.top + sceneObject.y * drawRect.drawH}px`;
+
+  sceneObjectImg.src = item.asset_url || "";
+  sceneObjectImg.alt = item.name || "Furniture";
+  sceneScaleLabel.textContent = `${Math.round(sceneObject.scale * 100)}%`;
+}
+
+function adjustSceneScale(delta) {
+  if (!sceneObject) return;
+  const next = clamp(sceneObject.scale + delta, 0.5, 2);
+  sceneObject.scale = next;
+  renderSceneObject();
+  resetResult();
+  setStatus(`Масштаб: ${Math.round(sceneObject.scale * 100)}% (мин. 50%)`);
+}
+
+function handleCanvasClick(event) {
+  if (!selectedRoomFile || !roomPreview.getAttribute("src")) return;
+  if (!selectedFurnitureId) {
+    setStatus("Сначала выбери мебель в каталоге", true);
+    return;
+  }
+
+  const point = eventToNormalized(event.clientX, event.clientY, false);
+  if (!point) return;
+  placeSceneObject(selectedFurnitureId, point.x, point.y, sceneObject?.scale || 1);
 }
 
 async function handleRender() {
-  if (!selectedRoomFile || !selectedPoint || !selectedFurnitureId) return;
+  if (!selectedRoomFile || !sceneObject || !sceneObject.furnitureId) return;
   renderBtn.disabled = true;
   setStatus("Генерация...");
   resetResult();
 
   const formData = new FormData();
   formData.append("room_image", selectedRoomFile);
-  formData.append("furniture_id", selectedFurnitureId);
-  formData.append("x", selectedPoint.x.toString());
-  formData.append("y", selectedPoint.y.toString());
+  formData.append("furniture_id", sceneObject.furnitureId);
+  formData.append("x", sceneObject.x.toString());
+  formData.append("y", sceneObject.y.toString());
+  formData.append("scale", sceneObject.scale.toString());
 
   try {
     const response = await fetch("/api/render", {
@@ -259,7 +440,6 @@ async function handleRender() {
     if (!response.ok) {
       throw new Error(data.error || "Ошибка генерации");
     }
-
     resultImage.src = data.result_image_url;
     downloadLink.href = data.result_image_url;
     downloadLink.hidden = false;
@@ -276,7 +456,6 @@ async function handleFurnitureUpload() {
   const name = (newFurnitureName.value || "").trim();
   const category = (newFurnitureCategory.value || "custom").trim();
   const imageFile = newFurnitureImage.files?.[0];
-
   if (!name) {
     setUploadStatus("Введи название предмета", true);
     return;
@@ -304,14 +483,13 @@ async function handleFurnitureUpload() {
     if (!response.ok) {
       throw new Error(data.error || "Не удалось загрузить предмет");
     }
-
     await loadFurnitureCatalog();
     selectedFurnitureId = data.item.id;
     renderFurnitureGrid();
-    updateRenderButtonState();
     newFurnitureName.value = "";
     newFurnitureImage.value = "";
     setUploadStatus(`Добавлено: ${data.item.name}`);
+    setStatus(`Добавлено: ${data.item.name}. Перетащи предмет на сцену.`);
   } catch (error) {
     console.error(error);
     setUploadStatus(`Ошибка: ${error.message}`, true);
@@ -323,7 +501,8 @@ async function handleFurnitureUpload() {
 function handleClear() {
   roomImageInput.value = "";
   selectedRoomFile = null;
-  selectedPoint = null;
+  sceneObject = null;
+  removeSceneObjectElement();
   roomPreview.removeAttribute("src");
   marker.hidden = true;
   coordsText.textContent = "Точка не выбрана";
@@ -333,8 +512,40 @@ function handleClear() {
   setStatus("Сцена очищена");
 }
 
+function handleCanvasDrop(event) {
+  event.preventDefault();
+  canvasSurface.classList.remove("drop-active");
+
+  if (!selectedRoomFile) {
+    setStatus("Сначала загрузи фото комнаты", true);
+    return;
+  }
+
+  let furnitureId = "";
+  if (event.dataTransfer) {
+    furnitureId = event.dataTransfer.getData("text/furniture-id");
+  }
+  if (!furnitureId) {
+    furnitureId = selectedFurnitureId;
+  }
+  if (!furnitureId) return;
+
+  const point = eventToNormalized(event.clientX, event.clientY, true) || { x: 0.5, y: 0.82 };
+  placeSceneObject(furnitureId, point.x, point.y, sceneObject?.scale || 1);
+}
+
 roomImageInput.addEventListener("change", handleRoomFileChange);
 canvasSurface.addEventListener("click", handleCanvasClick);
+canvasSurface.addEventListener("dragover", (event) => {
+  if (!selectedRoomFile) return;
+  event.preventDefault();
+  canvasSurface.classList.add("drop-active");
+});
+canvasSurface.addEventListener("dragleave", () => {
+  canvasSurface.classList.remove("drop-active");
+});
+canvasSurface.addEventListener("drop", handleCanvasDrop);
+
 renderBtn.addEventListener("click", handleRender);
 clearBtn.addEventListener("click", handleClear);
 uploadFurnitureBtn.addEventListener("click", handleFurnitureUpload);
@@ -343,12 +554,13 @@ searchInput.addEventListener("input", (event) => {
   renderFurnitureGrid();
 });
 
+roomPreview.addEventListener("load", () => {
+  updateEmptyHint();
+  renderSceneObject();
+});
+
 window.addEventListener("resize", () => {
-  if (!selectedPoint || marker.hidden) return;
-  const drawRect = getImageDrawRect(roomPreview);
-  if (!drawRect) return;
-  marker.style.left = `${drawRect.left + selectedPoint.x * drawRect.drawW}px`;
-  marker.style.top = `${drawRect.top + selectedPoint.y * drawRect.drawH}px`;
+  renderSceneObject();
 });
 
 updateEmptyHint();
