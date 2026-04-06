@@ -1,5 +1,7 @@
 import base64
+import json
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -17,6 +19,7 @@ GENERATED_DIR = BASE_DIR / "generated"
 STATIC_DIR = BASE_DIR / "static"
 
 CATALOG_FILE = FURNITURE_DIR / "catalog.json"
+FURNITURE_PACK_FILE = FURNITURE_DIR / "furniture_pack.zip"
 
 load_dotenv(BASE_DIR / ".env")
 
@@ -31,12 +34,45 @@ def ensure_dirs() -> None:
 
 
 def load_catalog() -> list[dict]:
-    import json
-
     if not CATALOG_FILE.exists():
         return []
     with CATALOG_FILE.open("r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    return data if isinstance(data, list) else []
+
+
+def save_catalog(items: list[dict]) -> None:
+    CATALOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CATALOG_FILE.write_text(
+        json.dumps(items, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def rebuild_furniture_pack() -> None:
+    import zipfile
+
+    FURNITURE_DIR.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(FURNITURE_PACK_FILE, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(FURNITURE_DIR.iterdir()):
+            if not path.is_file():
+                continue
+            if path.name == FURNITURE_PACK_FILE.name:
+                continue
+            zf.write(path, arcname=path.name)
+
+
+def make_slug(text: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", text.strip().lower()).strip("-")
+    return slug or "furniture"
+
+
+def save_uploaded_furniture_image(upload_file, name_slug: str) -> str:
+    image = Image.open(upload_file.stream).convert("RGBA")
+    filename = f"{name_slug}-{uuid.uuid4().hex[:8]}.png"
+    output_path = FURNITURE_DIR / filename
+    image.save(output_path, format="PNG")
+    return filename
 
 
 def get_furniture_item(furniture_id: str) -> dict | None:
@@ -164,6 +200,45 @@ def index():
 @app.route("/api/furniture", methods=["GET"])
 def api_furniture():
     return jsonify({"items": load_catalog()})
+
+
+@app.route("/api/furniture/upload", methods=["POST"])
+def api_upload_furniture():
+    FURNITURE_DIR.mkdir(parents=True, exist_ok=True)
+
+    image_file = request.files.get("furniture_image")
+    name = (request.form.get("name") or "").strip()
+    category = (request.form.get("category") or "custom").strip().lower() or "custom"
+    prompt = (request.form.get("prompt") or "").strip()
+
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    if not image_file or not image_file.filename:
+        return jsonify({"error": "furniture_image file is required"}), 400
+    if not allowed_image(image_file.filename):
+        return jsonify({"error": "Only jpg, jpeg, png, webp are allowed"}), 400
+
+    name_slug = make_slug(name)
+    item_id = f"{name_slug}-{uuid.uuid4().hex[:8]}"
+
+    try:
+        asset_file = save_uploaded_furniture_image(image_file, name_slug)
+    except Exception as exc:
+        return jsonify({"error": f"Failed to read image file: {exc}"}), 400
+
+    item = {
+        "id": item_id,
+        "name": name,
+        "category": category,
+        "asset_file": asset_file,
+        "prompt": prompt or f"A realistic {name} in modern interior style",
+    }
+    items = load_catalog()
+    items.append(item)
+    save_catalog(items)
+    rebuild_furniture_pack()
+
+    return jsonify({"item": item})
 
 
 @app.route("/api/health", methods=["GET"])

@@ -31,6 +31,28 @@
         </div>
       </section>
 
+      <section class="panel upload-panel">
+        <label class="field">
+          <span>Название нового предмета</span>
+          <input id="newFurnitureName" type="text" placeholder="Например: Стул 2" />
+        </label>
+
+        <label class="field">
+          <span>Категория (chair/table/...)</span>
+          <input id="newFurnitureCategory" type="text" placeholder="chair" value="chair" />
+        </label>
+
+        <label class="field">
+          <span>PNG/JPG предмета</span>
+          <input id="newFurnitureImage" type="file" accept=".png,.jpg,.jpeg,.webp" />
+        </label>
+
+        <div class="actions">
+          <button id="uploadFurnitureBtn">Добавить предмет</button>
+          <span id="uploadStatusText">Можно добавить свою мебель</span>
+        </div>
+      </section>
+
       <section class="grid">
         <article class="card">
           <h2>Фото комнаты</h2>

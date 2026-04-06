@@ -75,6 +75,11 @@ input[type="file"] {
   gap: 8px;
 }
 
+.actions-upload {
+  display: grid;
+  gap: 8px;
+}
+
 button {
   border: 0;
   border-radius: 10px;
@@ -91,6 +96,11 @@ button:disabled {
 }
 
 #statusText {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#uploadStatusText {
   color: var(--muted);
   font-size: 13px;
 }
