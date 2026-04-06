@@ -426,11 +426,7 @@ function createSceneObjectElement(sceneObject, drawRect) {
   el.dataset.sceneObjectId = sceneObject.id;
   el.style.zIndex = String(20 + sceneObject.layerOrder);
 
-  const widthPx = Math.max(40, Math.round(drawRect.drawW * BASE_OBJECT_WIDTH * sceneObject.scale));
-  el.style.width = `${widthPx}px`;
-  el.style.left = `${drawRect.left + sceneObject.x * drawRect.drawW}px`;
-  el.style.top = `${drawRect.top + sceneObject.y * drawRect.drawH}px`;
-  el.style.transform = `translate(-50%, -100%) rotate(${sceneObject.rotationDeg}deg)`;
+  applySceneObjectElementGeometry(el, sceneObject, drawRect);
 
   const image = document.createElement("img");
   image.src = furniture.asset_url || "";
@@ -530,9 +526,8 @@ function createSceneObjectElement(sceneObject, drawRect) {
     target.x = point.x;
     target.y = point.y;
     activeSnapState = applySceneBoundsAndSnap(target, draw);
-    autoLayerByYIfNeeded();
-    renderSceneObjects();
-    renderLayersPanel();
+    applySceneObjectElementGeometry(el, target, draw);
+    updateSnapGuides(activeSnapState, draw);
     coordsText.textContent = `Объект: x=${target.x.toFixed(3)}, y=${target.y.toFixed(3)}`;
     resetResult();
   });
@@ -540,14 +535,21 @@ function createSceneObjectElement(sceneObject, drawRect) {
   const finishDrag = (event) => {
     if (!dragState || dragState.sceneObjectId !== sceneObject.id) return;
     dragState = null;
-    activeSnapState = null;
-    hideSnapGuides();
     el.classList.remove("dragging");
     try {
       el.releasePointerCapture(event.pointerId);
     } catch {
       // no-op
     }
+    if (!manualLayerOrdering) {
+      autoLayerByYIfNeeded();
+    }
+    normalizeLayerOrders();
+    activeSnapState = null;
+    hideSnapGuides();
+    renderSceneObjects();
+    renderLayersPanel();
+    setStatus("Предмет перемещён");
   };
   el.addEventListener("pointerup", finishDrag);
   el.addEventListener("pointercancel", finishDrag);
@@ -563,6 +565,15 @@ function createSceneObjectElement(sceneObject, drawRect) {
   });
 
   return el;
+}
+
+function applySceneObjectElementGeometry(el, sceneObject, drawRect) {
+  const widthPx = Math.max(40, Math.round(drawRect.drawW * BASE_OBJECT_WIDTH * sceneObject.scale));
+  el.style.zIndex = String(20 + sceneObject.layerOrder);
+  el.style.width = `${widthPx}px`;
+  el.style.left = `${drawRect.left + sceneObject.x * drawRect.drawW}px`;
+  el.style.top = `${drawRect.top + sceneObject.y * drawRect.drawH}px`;
+  el.style.transform = `translate(-50%, -100%) rotate(${sceneObject.rotationDeg}deg)`;
 }
 
 function renderSceneObjects() {
