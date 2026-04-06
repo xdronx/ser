@@ -353,6 +353,16 @@ body {
   cursor: not-allowed;
 }
 
+.ghost-btn-danger {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fff1f2;
+}
+
+.ghost-btn-danger:hover {
+  filter: brightness(0.99);
+}
+
 .canvas-wrap {
   position: relative;
   background: #eceff4;
@@ -394,6 +404,10 @@ body {
   outline-offset: -6px;
 }
 
+.canvas-surface.remove-mode {
+  cursor: crosshair;
+}
+
 .snap-guide {
   position: absolute;
   opacity: 0;
@@ -424,6 +438,15 @@ body {
   height: 2px;
   background: linear-gradient(90deg, rgba(59, 130, 246, 0), rgba(59, 130, 246, 0.95), rgba(59, 130, 246, 0));
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
+.remove-selection-box {
+  position: absolute;
+  z-index: 8;
+  pointer-events: none;
+  border: 2px dashed #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  border-radius: 4px;
 }
 
 #roomPreview:not([src]),

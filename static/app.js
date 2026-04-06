@@ -12,6 +12,10 @@ const renderProgressWrap = document.getElementById("renderProgressWrap");
 const renderProgressBar = document.getElementById("renderProgressBar");
 const renderProgressPercent = document.getElementById("renderProgressPercent");
 const renderProgressLabel = document.getElementById("renderProgressLabel");
+const removeFurnitureBtn = document.getElementById("removeFurnitureBtn");
+const confirmRemoveBtn = document.getElementById("confirmRemoveBtn");
+const cancelRemoveBtn = document.getElementById("cancelRemoveBtn");
+const removeSelectionBox = document.getElementById("removeSelectionBox");
 
 const searchInput = document.getElementById("searchInput");
 const categoryTabs = document.getElementById("categoryTabs");
@@ -52,6 +56,10 @@ let uidCounter = 1;
 let isRendering = false;
 let renderProgressValue = 0;
 let renderProgressTimer = null;
+let isRemoveMode = false;
+let isSelectingRemoveArea = false;
+let removeSelection = null; // normalized selection {x1,y1,x2,y2}
+let removeSelectionStart = null;
 
 const ratioCache = new Map();
 
@@ -194,6 +202,13 @@ function updateRenderButtonState() {
   renderBtn.disabled = isRendering || !(selectedRoomFile && sceneObjects.length > 0);
 }
 
+function updateRemoveButtonsState() {
+  const enabled = Boolean(selectedRoomFile) && !isRendering;
+  removeFurnitureBtn.disabled = !enabled;
+  confirmRemoveBtn.disabled = !enabled || !removeSelection;
+  cancelRemoveBtn.disabled = !enabled;
+}
+
 function resetResult() {
   resultImage.removeAttribute("src");
   downloadLink.hidden = true;
@@ -228,6 +243,58 @@ function hideRenderProgress() {
   renderProgressBar.style.width = "0%";
   renderProgressPercent.textContent = "0%";
   renderProgressLabel.textContent = "Нейросеть работает...";
+}
+
+function hideRemoveSelectionBox() {
+  removeSelectionBox.hidden = true;
+}
+
+function drawRemoveSelectionBox(selection) {
+  const drawRect = getImageDrawRect(roomPreview);
+  if (!selection || !drawRect) {
+    hideRemoveSelectionBox();
+    return;
+  }
+  const minX = Math.min(selection.x1, selection.x2);
+  const minY = Math.min(selection.y1, selection.y2);
+  const maxX = Math.max(selection.x1, selection.x2);
+  const maxY = Math.max(selection.y1, selection.y2);
+
+  const left = drawRect.left + minX * drawRect.drawW;
+  const top = drawRect.top + minY * drawRect.drawH;
+  const width = Math.max(1, (maxX - minX) * drawRect.drawW);
+  const height = Math.max(1, (maxY - minY) * drawRect.drawH);
+
+  removeSelectionBox.hidden = false;
+  removeSelectionBox.style.left = `${left}px`;
+  removeSelectionBox.style.top = `${top}px`;
+  removeSelectionBox.style.width = `${width}px`;
+  removeSelectionBox.style.height = `${height}px`;
+}
+
+function clearRemoveSelection() {
+  removeSelection = null;
+  removeSelectionStart = null;
+  isSelectingRemoveArea = false;
+  hideRemoveSelectionBox();
+  updateRemoveButtonsState();
+}
+
+function setRemoveMode(next) {
+  isRemoveMode = Boolean(next);
+  canvasSurface.classList.toggle("remove-mode", isRemoveMode);
+  if (isRemoveMode) {
+    confirmRemoveBtn.hidden = false;
+    cancelRemoveBtn.hidden = false;
+    removeFurnitureBtn.hidden = true;
+    setStatus("Режим удаления: выдели прямоугольник на фото.");
+  } else {
+    confirmRemoveBtn.hidden = true;
+    cancelRemoveBtn.hidden = true;
+    removeFurnitureBtn.hidden = false;
+    clearRemoveSelection();
+  }
+  updateRemoveButtonsState();
 }
 
 function startProcessingProgress() {
@@ -281,6 +348,53 @@ function sendRenderRequest(formData) {
     xhr.addEventListener("abort", () => {
       clearRenderProgressTimer();
       reject(new Error("Запрос к нейросети был прерван"));
+    });
+
+    xhr.send(formData);
+  });
+}
+
+function sendRemoveRequest(formData) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/remove-furniture", true);
+    xhr.responseType = "json";
+
+    xhr.upload.addEventListener("loadstart", () => {
+      setRenderProgress(3, "Подготовка удаления мебели...");
+    });
+
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) return;
+      const uploadRatio = event.total > 0 ? event.loaded / event.total : 0;
+      setRenderProgress(5 + uploadRatio * 45, "Отправка выделенной области...");
+    });
+
+    xhr.upload.addEventListener("load", () => {
+      setRenderProgress(Math.max(renderProgressValue, 50), "Удаляем мебель нейросетью...");
+      startProcessingProgress();
+    });
+
+    xhr.addEventListener("load", () => {
+      clearRenderProgressTimer();
+      const payload = xhr.response || {};
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setRenderProgress(100, "Готово! Область очищена.");
+        resolve(payload);
+        return;
+      }
+      const message = payload?.error || xhr.responseText || "Ошибка удаления мебели";
+      reject(new Error(message));
+    });
+
+    xhr.addEventListener("error", () => {
+      clearRenderProgressTimer();
+      reject(new Error("Сетевая ошибка при удалении мебели"));
+    });
+
+    xhr.addEventListener("abort", () => {
+      clearRenderProgressTimer();
+      reject(new Error("Запрос удаления мебели прерван"));
     });
 
     xhr.send(formData);
@@ -761,6 +875,7 @@ function addSceneObject(furnitureId, x, y, scale = 1, rotationDeg = 0) {
 }
 
 function handleCanvasClick(event) {
+  if (isRemoveMode) return;
   if (event.target.closest(".scene-object")) return;
   if (!selectedRoomFile || !roomPreview.getAttribute("src")) return;
   if (!selectedFurnitureId) {
@@ -780,6 +895,7 @@ function handleCanvasClick(event) {
 }
 
 function handleCanvasDrop(event) {
+  if (isRemoveMode) return;
   event.preventDefault();
   canvasSurface.classList.remove("drop-active");
   if (!selectedRoomFile) {
@@ -802,6 +918,118 @@ function handleCanvasDrop(event) {
     active?.scale || 1,
     active?.rotationDeg || 0
   );
+}
+
+function handleRemovePointerDown(event) {
+  if (!isRemoveMode || !selectedRoomFile || isRendering) return;
+  if (event.target.closest(".scene-object")) return;
+  const point = eventToNormalized(event.clientX, event.clientY, false);
+  if (!point) return;
+  isSelectingRemoveArea = true;
+  removeSelectionStart = { x: point.x, y: point.y };
+  removeSelection = { x1: point.x, y1: point.y, x2: point.x, y2: point.y };
+  drawRemoveSelectionBox(removeSelection);
+  updateRemoveButtonsState();
+}
+
+function handleRemovePointerMove(event) {
+  if (!isRemoveMode || !isSelectingRemoveArea || !removeSelectionStart) return;
+  const point = eventToNormalized(event.clientX, event.clientY, true);
+  if (!point) return;
+  removeSelection = {
+    x1: removeSelectionStart.x,
+    y1: removeSelectionStart.y,
+    x2: point.x,
+    y2: point.y,
+  };
+  drawRemoveSelectionBox(removeSelection);
+  updateRemoveButtonsState();
+}
+
+function handleRemovePointerUp() {
+  if (!isRemoveMode) return;
+  if (!isSelectingRemoveArea || !removeSelection) return;
+  isSelectingRemoveArea = false;
+  const width = Math.abs(removeSelection.x2 - removeSelection.x1);
+  const height = Math.abs(removeSelection.y2 - removeSelection.y1);
+  if (width < 0.01 || height < 0.01) {
+    clearRemoveSelection();
+    setStatus("Слишком маленькая область. Выдели больше.", true);
+    return;
+  }
+  drawRemoveSelectionBox(removeSelection);
+  setStatus("Область выбрана. Нажми «Подтвердить удаление».");
+  updateRemoveButtonsState();
+}
+
+async function handleConfirmRemove() {
+  if (!isRemoveMode || !selectedRoomFile || !removeSelection || isRendering) return;
+  isRendering = true;
+  updateRenderButtonState();
+  updateRemoveButtonsState();
+  setRenderProgress(1, "Запуск удаления мебели...");
+
+  const x1 = Math.min(removeSelection.x1, removeSelection.x2);
+  const y1 = Math.min(removeSelection.y1, removeSelection.y2);
+  const x2 = Math.max(removeSelection.x1, removeSelection.x2);
+  const y2 = Math.max(removeSelection.y1, removeSelection.y2);
+
+  const formData = new FormData();
+  formData.append("room_image", selectedRoomFile);
+  formData.append(
+    "remove_box",
+    JSON.stringify({
+      x1,
+      y1,
+      x2,
+      y2,
+    })
+  );
+
+  try {
+    const data = await sendRemoveRequest(formData);
+    if (!data?.result_image_url) {
+      throw new Error("Не удалось получить результат удаления");
+    }
+    resultImage.src = data.result_image_url;
+    downloadLink.href = data.result_image_url;
+    downloadLink.setAttribute("download", `room-clean-${Date.now()}.jpg`);
+    downloadLink.hidden = false;
+
+    const newRoomResponse = await fetch(data.result_image_url);
+    if (!newRoomResponse.ok) {
+      throw new Error("Не удалось загрузить обновлённое фото комнаты");
+    }
+    const blob = await newRoomResponse.blob();
+    const filename = selectedRoomFile.name || "room-clean.jpg";
+    selectedRoomFile = new File([blob], filename, { type: blob.type || "image/jpeg" });
+    if (selectedRoomUrl) URL.revokeObjectURL(selectedRoomUrl);
+    selectedRoomUrl = URL.createObjectURL(blob);
+    roomPreview.src = selectedRoomUrl;
+
+    sceneObjects = [];
+    activeSceneObjectId = null;
+    manualLayerOrdering = false;
+    renderSceneObjects();
+    renderLayersPanel();
+    updateRenderButtonState();
+    setRemoveMode(false);
+    setStatus("Готово! Старая мебель удалена, можешь добавлять новую.");
+  } catch (error) {
+    console.error(error);
+    setRenderProgress(renderProgressValue, "Ошибка удаления");
+    setStatus(`Ошибка: ${error.message}`, true);
+  } finally {
+    isRendering = false;
+    updateRenderButtonState();
+    updateRemoveButtonsState();
+  }
+}
+
+function handleCancelRemove() {
+  if (isRendering) return;
+  setRemoveMode(false);
+  setStatus("Режим удаления выключен.");
 }
 
 function removeUnknownSceneObjects() {
@@ -850,6 +1078,8 @@ function handleRoomFileChange(event) {
     renderSceneObjects();
     renderLayersPanel();
     updateRenderButtonState();
+    setRemoveMode(false);
+    updateRemoveButtonsState();
     return;
   }
 
@@ -868,6 +1098,8 @@ function handleRoomFileChange(event) {
   renderSceneObjects();
   renderLayersPanel();
   updateRenderButtonState();
+  setRemoveMode(false);
+  updateRemoveButtonsState();
   setStatus("Фото загружено. Перетащи мебель из каталога на сцену.");
 }
 
@@ -973,11 +1205,17 @@ function handleClear() {
   renderSceneObjects();
   renderLayersPanel();
   updateRenderButtonState();
+  setRemoveMode(false);
+  updateRemoveButtonsState();
   setStatus("Сцена очищена");
 }
 
 roomImageInput.addEventListener("change", handleRoomFileChange);
 canvasSurface.addEventListener("click", handleCanvasClick);
+canvasSurface.addEventListener("pointerdown", handleRemovePointerDown);
+canvasSurface.addEventListener("pointermove", handleRemovePointerMove);
+canvasSurface.addEventListener("pointerup", handleRemovePointerUp);
+canvasSurface.addEventListener("pointercancel", handleRemovePointerUp);
 canvasSurface.addEventListener("dragover", (event) => {
   if (!selectedRoomFile) return;
   event.preventDefault();
@@ -990,6 +1228,12 @@ canvasSurface.addEventListener("drop", handleCanvasDrop);
 
 renderBtn.addEventListener("click", handleRender);
 clearBtn.addEventListener("click", handleClear);
+removeFurnitureBtn.addEventListener("click", () => {
+  if (!selectedRoomFile || isRendering) return;
+  setRemoveMode(true);
+});
+confirmRemoveBtn.addEventListener("click", handleConfirmRemove);
+cancelRemoveBtn.addEventListener("click", handleCancelRemove);
 uploadFurnitureBtn.addEventListener("click", handleFurnitureUpload);
 searchInput.addEventListener("input", (event) => {
   searchQuery = (event.target.value || "").trim().toLowerCase();
@@ -1000,6 +1244,9 @@ roomPreview.addEventListener("load", () => {
   updateEmptyHint();
   renderSceneObjects();
   renderLayersPanel();
+  if (isRemoveMode) {
+    drawRemoveSelectionBox(removeSelection);
+  }
 });
 
 window.addEventListener("resize", () => {
@@ -1009,6 +1256,7 @@ window.addEventListener("resize", () => {
 updateEmptyHint();
 hideSnapGuides();
 renderLayersPanel();
+updateRemoveButtonsState();
 loadFurnitureCatalog().catch((error) => {
   console.error(error);
   setStatus(error.message, true);

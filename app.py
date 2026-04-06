@@ -533,6 +533,159 @@ def call_openai_image_edit(
     return output_name
 
 
+def call_openai_remove_furniture(
+    room_path: Path,
+    remove_box: tuple[float, float, float, float],
+) -> str:
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY is empty. Add it to .env for openai mode.")
+
+    image = Image.open(room_path).convert("RGB")
+    width, height = image.size
+    x1n, y1n, x2n, y2n = remove_box
+    target_box = (
+        int(width * x1n),
+        int(height * y1n),
+        int(width * x2n),
+        int(height * y2n),
+    )
+    target_box = _expand_box(target_box, margin=24, width=width, height=height)
+    mask = _build_openai_mask(image.size, [target_box])
+
+    image_bytes = io.BytesIO()
+    image.save(image_bytes, format="PNG")
+    image_bytes.seek(0)
+
+    mask_bytes = io.BytesIO()
+    mask.save(mask_bytes, format="PNG")
+    mask_bytes.seek(0)
+
+    prompt = (
+        "Ты редактируешь реальную фотографию комнаты. "
+        "Удали мебель и следы мебели строго внутри выделенной области маски. "
+        "Естественно восстанови фон (пол/стены) в стиле исходного фото. "
+        "Не изменяй ничего вне маски. Не добавляй новые объекты."
+    )
+    if OPENAI_NEGATIVE_PROMPT:
+        prompt = f"{prompt} Negative prompt: {OPENAI_NEGATIVE_PROMPT}"
+    if len(prompt) > OPENAI_PROMPT_MAX_LEN:
+        prompt = prompt[:OPENAI_PROMPT_MAX_LEN]
+
+    endpoint = f"{OPENAI_BASE_URL.rstrip('/')}/images/edits"
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    files = {
+        "image": ("room.png", image_bytes.getvalue(), "image/png"),
+        "mask": ("mask.png", mask_bytes.getvalue(), "image/png"),
+    }
+
+    def _request_with_model(model_name: str) -> tuple[requests.Response, str]:
+        data = {
+            "model": model_name,
+            "prompt": prompt,
+            "response_format": "b64_json",
+            "n": "1",
+        }
+        if OPENAI_IMAGE_SIZE:
+            data["size"] = OPENAI_IMAGE_SIZE
+        if OPENAI_IMAGE_QUALITY and model_name != "dall-e-2":
+            data["quality"] = OPENAI_IMAGE_QUALITY
+        response = requests.post(
+            endpoint,
+            headers=headers,
+            data=data,
+            files=files,
+            timeout=OPENAI_TIMEOUT_SEC,
+        )
+        return response, model_name
+
+    primary_model = OPENAI_IMAGE_MODEL or "gpt-image-1"
+    response, used_model = _request_with_model(primary_model)
+
+    if response.status_code >= 400:
+        try:
+            err = response.json()
+            message = str(err.get("error", {}).get("message") or err)
+        except Exception:
+            message = response.text
+
+        can_fallback = (
+            OPENAI_FALLBACK_MODEL
+            and OPENAI_FALLBACK_MODEL != used_model
+            and (
+                "must be 'dall-e-2'" in message.lower()
+                or "does not have access" in message.lower()
+                or "model_not_found" in message.lower()
+            )
+        )
+        if not can_fallback:
+            raise ValueError(f"OpenAI remove furniture failed: {message}")
+
+        response, used_model = _request_with_model(OPENAI_FALLBACK_MODEL)
+        if response.status_code >= 400:
+            try:
+                err2 = response.json()
+                message2 = str(err2.get("error", {}).get("message") or err2)
+            except Exception:
+                message2 = response.text
+            raise ValueError(
+                f"OpenAI remove furniture failed on '{primary_model}' and fallback "
+                f"'{OPENAI_FALLBACK_MODEL}': {message2}"
+            )
+
+    content_type = (response.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        payload = response.json()
+        data_list = payload.get("data") or []
+        if not data_list:
+            raise ValueError("OpenAI returned empty data list.")
+        first = data_list[0]
+        if "b64_json" in first:
+            result_bytes = base64.b64decode(first["b64_json"])
+        elif "url" in first:
+            image_resp = requests.get(first["url"], timeout=OPENAI_TIMEOUT_SEC)
+            image_resp.raise_for_status()
+            result_bytes = image_resp.content
+        else:
+            raise ValueError("OpenAI response missing b64_json/url image field.")
+    else:
+        result_bytes = response.content
+
+    output_name = f"{uuid.uuid4().hex}.jpg"
+    output_path = GENERATED_DIR / output_name
+    result_image = Image.open(io.BytesIO(result_bytes)).convert("RGB")
+    result_image.save(output_path, format="JPEG", quality=92)
+    return output_name
+
+
+def draw_local_remove_furniture(
+    room_path: Path,
+    remove_box: tuple[float, float, float, float],
+) -> str:
+    image = Image.open(room_path).convert("RGB")
+    width, height = image.size
+    x1n, y1n, x2n, y2n = remove_box
+    box = (
+        int(width * x1n),
+        int(height * y1n),
+        int(width * x2n),
+        int(height * y2n),
+    )
+    box = _expand_box(box, margin=6, width=width, height=height)
+
+    blur_radius = max(10, min(width, height) // 80)
+    blurred = image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    mask = Image.new("L", image.size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rectangle(box, fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=max(6, blur_radius // 2)))
+    result = Image.composite(blurred, image, mask)
+
+    output_name = f"{uuid.uuid4().hex}.jpg"
+    output_path = GENERATED_DIR / output_name
+    result.save(output_path, format="JPEG", quality=90)
+    return output_name
+
+
 def call_external_webhook(
     room_path: Path,
     scene_objects: list[dict],
@@ -666,6 +819,69 @@ def api_health():
             "ok": True,
             "provider": GENERATION_PROVIDER,
             "openai_configured": bool(OPENAI_API_KEY),
+        }
+    )
+
+
+@app.route("/api/remove-furniture", methods=["POST"])
+def api_remove_furniture():
+    ensure_dirs()
+    room_file = request.files.get("room_image")
+    remove_box_raw = (request.form.get("remove_box") or "").strip()
+
+    if not room_file or not room_file.filename:
+        return jsonify({"error": "room_image file is required"}), 400
+    if not allowed_image(room_file.filename):
+        return jsonify({"error": "Only jpg, jpeg, png, webp are allowed"}), 400
+    if not remove_box_raw:
+        return jsonify({"error": "remove_box is required"}), 400
+
+    try:
+        remove_box_payload = json.loads(remove_box_raw)
+    except json.JSONDecodeError:
+        return jsonify({"error": "remove_box must be valid JSON object"}), 400
+    if not isinstance(remove_box_payload, dict):
+        return jsonify({"error": "remove_box must be object"}), 400
+
+    try:
+        x1 = float(remove_box_payload.get("x1"))
+        y1 = float(remove_box_payload.get("y1"))
+        x2 = float(remove_box_payload.get("x2"))
+        y2 = float(remove_box_payload.get("y2"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "remove_box x1,y1,x2,y2 must be numbers"}), 400
+
+    if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1):
+        return jsonify({"error": "remove_box coordinates must satisfy 0<=x1<x2<=1 and 0<=y1<y2<=1"}), 400
+    if (x2 - x1) < 0.01 or (y2 - y1) < 0.01:
+        return jsonify({"error": "remove_box is too small"}), 400
+
+    room_ext = Path(room_file.filename).suffix.lower()
+    upload_name = f"{uuid.uuid4().hex}{room_ext}"
+    upload_path = UPLOADS_DIR / upload_name
+    room_file.save(upload_path)
+
+    provider = "local-inpaint"
+    try:
+        if OPENAI_API_KEY:
+            output_name = call_openai_remove_furniture(upload_path, (x1, y1, x2, y2))
+            provider = "openai-inpaint"
+        else:
+            output_name = draw_local_remove_furniture(upload_path, (x1, y1, x2, y2))
+    except Exception as exc:
+        if OPENAI_API_KEY:
+            try:
+                output_name = draw_local_remove_furniture(upload_path, (x1, y1, x2, y2))
+                provider = "local-inpaint-fallback"
+            except Exception:
+                return jsonify({"error": f"Remove furniture failed: {exc}"}), 500
+        else:
+            return jsonify({"error": f"Remove furniture failed: {exc}"}), 500
+
+    return jsonify(
+        {
+            "result_image_url": f"/generated/{output_name}",
+            "provider": provider,
         }
     )
 

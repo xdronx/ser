@@ -56,6 +56,11 @@
               <input id="roomImageInput" type="file" accept=".jpg,.jpeg,.png,.webp" />
               <span>Загрузить фото</span>
             </label>
+            <button id="removeFurnitureBtn" class="ghost-btn" type="button">Удалить мебель</button>
+            <button id="confirmRemoveBtn" class="ghost-btn ghost-btn-danger" type="button" hidden disabled>
+              Подтвердить удаление
+            </button>
+            <button id="cancelRemoveBtn" class="ghost-btn" type="button" hidden>Отмена</button>
             <button id="clearBtn" class="ghost-btn" type="button">Очистить</button>
           </div>
 
@@ -83,6 +88,7 @@
               <div id="marker" class="marker" hidden></div>
               <div id="snapGuideV" class="snap-guide snap-guide-v" hidden></div>
               <div id="snapGuideH" class="snap-guide snap-guide-h" hidden></div>
+              <div id="removeSelectionBox" class="remove-selection-box" hidden></div>
               <div id="sceneObjectsLayer" class="scene-objects-layer"></div>
               <div id="emptyHint" class="hint-empty">Загрузи фото комнаты, чтобы начать</div>
             </div>
