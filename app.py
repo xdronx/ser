@@ -50,12 +50,31 @@ OPENAI_REFINE_PROMPT = os.getenv(
     "под комнату. Итог должен выглядеть как настоящая фотография. "
     "ВАЖНО: Если изменится комната или мебель — результат неправильный.",
 ).strip()
+OPENAI_STRICT_PLACEMENT_PROMPT = os.getenv(
+    "OPENAI_STRICT_PLACEMENT_PROMPT",
+    "РАЗМЕЩЕНИЕ: Размести мебель строго внутри выделенной области. "
+    "Мебель должна стоять на полу (не висеть в воздухе). "
+    "Учитывай горизонт и перспективу комнаты. "
+    "РЕАЛИЗМ: Добавь естественную тень под мебелью. Мебель должна касаться пола. "
+    "Освещение должно совпадать с комнатой. "
+    "ЗАПРЕТЫ: Не изменяй дизайн мебели. Не добавляй детали от себя. "
+    "Не улучшай и не стилизуй объект. "
+    "КОМНАТА: Сохрани исходное изображение без изменений. "
+    "Не изменяй геометрию комнаты. Не двигай существующие объекты. "
+    "МАСШТАБ: Размер мебели должен быть реалистичным относительно комнаты. "
+    "Ориентируйся на стены, двери, окна.",
+).strip()
 OPENAI_NEGATIVE_PROMPT = os.getenv(
     "OPENAI_NEGATIVE_PROMPT",
     "размыто, плохое качество, другая комната, изменённые стены, изменённый пол, "
     "лишние предметы, неправильная перспектива, странный свет, 3d рендер, мультяшно, "
     "изменённая мебель",
 ).strip()
+OPENAI_PROMPT_MAX_LEN = 980
+STRICT_IMAGE_EDIT_POLICY = (
+    "Редактируй только мебель в выделенной области. "
+    "Не изменяй комнату, стены, пол, освещение, ракурс, существующие объекты."
+)
 try:
     OPENAI_TIMEOUT_SEC = int((os.getenv("OPENAI_TIMEOUT_SEC", "120") or "120").strip())
 except ValueError:
@@ -392,7 +411,7 @@ def call_openai_image_edit(
     mask.save(mask_bytes, format="PNG")
     mask_bytes.seek(0)
 
-    prompt_parts = [OPENAI_REFINE_PROMPT.strip()]
+    prompt_parts = [OPENAI_REFINE_PROMPT.strip(), OPENAI_STRICT_PLACEMENT_PROMPT.strip()]
     furniture_prompts: list[str] = []
     furniture_names: list[str] = []
     rotations: list[str] = []
@@ -411,6 +430,18 @@ def call_openai_image_edit(
     if OPENAI_NEGATIVE_PROMPT:
         prompt_parts.append(f"Negative prompt: {OPENAI_NEGATIVE_PROMPT}")
     prompt = " ".join(part for part in prompt_parts if part)
+    if len(prompt) > OPENAI_PROMPT_MAX_LEN:
+        # Keep critical instruction priority while respecting provider prompt limits.
+        essential_parts = [
+            STRICT_IMAGE_EDIT_POLICY,
+            f"Objects: {', '.join(furniture_names[:6])}.",
+            "Do not move furniture position. Keep room geometry unchanged.",
+        ]
+        if OPENAI_NEGATIVE_PROMPT:
+            essential_parts.append(f"Negative prompt: {OPENAI_NEGATIVE_PROMPT}")
+        prompt = " ".join(part for part in essential_parts if part)
+    if len(prompt) > OPENAI_PROMPT_MAX_LEN:
+        prompt = prompt[:OPENAI_PROMPT_MAX_LEN]
 
     endpoint = f"{OPENAI_BASE_URL.rstrip('/')}/images/edits"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
