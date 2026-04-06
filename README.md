@@ -80,6 +80,7 @@ OPENAI_IMAGE_SIZE=
 OPENAI_IMAGE_QUALITY=
 OPENAI_TIMEOUT_SEC=120
 OPENAI_REFINE_PROMPT=Blend the furniture naturally into the room. Preserve geometry and placement. Keep realistic contact shadows on the floor and match lighting and color tone.
+OPENAI_NEGATIVE_PROMPT=blurry, low quality, different room, changed walls, changed floor, extra objects, wrong perspective, odd lighting, 3d render, cartoon, changed furniture
 ```
 
 ---
@@ -203,6 +204,7 @@ OPENAI_IMAGE_SIZE=
 OPENAI_IMAGE_QUALITY=
 OPENAI_TIMEOUT_SEC=120
 OPENAI_REFINE_PROMPT=Blend the furniture naturally into the room. Preserve geometry and placement. Keep realistic contact shadows on the floor and match lighting and color tone.
+OPENAI_NEGATIVE_PROMPT=blurry, low quality, different room, changed walls, changed floor, extra objects, wrong perspective, odd lighting, 3d render, cartoon, changed furniture
 ```
 
 3. Перезапусти сервер:
@@ -217,6 +219,18 @@ python3 app.py
 
 Если аккаунт не имеет доступа к `gpt-image-1`, приложение автоматически
 попробует fallback-модель `dall-e-2` (настраивается через `OPENAI_FALLBACK_MODEL`).
+
+### Рекомендуемый промт для финальной генерации
+
+Можно сразу использовать такой строгий промт в `.env`:
+
+```env
+OPENAI_REFINE_PROMPT=Ты редактируешь реальную фотографию комнаты. ЗАДАЧА: Добавь указанную мебель в выделенную область изображения. СТРОГИЕ ПРАВИЛА: Не изменяй комнату вообще. Всё вне выделенной области должно остаться без изменений. Не меняй стены, пол, освещение, предметы и ракурс. Сохрани оригинальные цвета и свет. МЕБЕЛЬ: Используй именно ту мебель, которая передана. Не меняй форму, цвет и детали. Не придумывай новую мебель. ТРЕБОВАНИЯ: Мебель должна выглядеть реалистично. Подгони размер, перспективу и освещение под комнату. Итог должен выглядеть как настоящая фотография. ВАЖНО: Если изменится комната или мебель — результат неправильный.
+OPENAI_NEGATIVE_PROMPT=размыто, плохое качество, другая комната, изменённые стены, изменённый пол, лишние предметы, неправильная перспектива, странный свет, 3d рендер, мультяшно, изменённая мебель
+```
+
+Если модель не поддерживает отдельный negative prompt параметр, приложение автоматически
+добавит его в текст основного промта как запрет.
 
 ### Как это работает внутри
 

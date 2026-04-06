@@ -39,8 +39,22 @@ OPENAI_IMAGE_SIZE = os.getenv("OPENAI_IMAGE_SIZE", "").strip()
 OPENAI_IMAGE_QUALITY = os.getenv("OPENAI_IMAGE_QUALITY", "").strip()
 OPENAI_REFINE_PROMPT = os.getenv(
     "OPENAI_REFINE_PROMPT",
-    "Blend the furniture naturally into the room. Preserve geometry and placement. "
-    "Keep realistic contact shadows on the floor and match lighting and color tone.",
+    "Ты редактируешь реальную фотографию комнаты. "
+    "ЗАДАЧА: Добавь указанную мебель в выделенную область изображения. "
+    "СТРОГИЕ ПРАВИЛА: Не изменяй комнату вообще. Всё вне выделенной области должно "
+    "остаться без изменений. Не меняй стены, пол, освещение, предметы и ракурс. "
+    "Сохрани оригинальные цвета и свет. "
+    "МЕБЕЛЬ: Используй именно ту мебель, которая передана. Не меняй форму, цвет и детали. "
+    "Не придумывай новую мебель. "
+    "ТРЕБОВАНИЯ: Мебель должна выглядеть реалистично. Подгони размер, перспективу и освещение "
+    "под комнату. Итог должен выглядеть как настоящая фотография. "
+    "ВАЖНО: Если изменится комната или мебель — результат неправильный.",
+).strip()
+OPENAI_NEGATIVE_PROMPT = os.getenv(
+    "OPENAI_NEGATIVE_PROMPT",
+    "размыто, плохое качество, другая комната, изменённые стены, изменённый пол, "
+    "лишние предметы, неправильная перспектива, странный свет, 3d рендер, мультяшно, "
+    "изменённая мебель",
 ).strip()
 try:
     OPENAI_TIMEOUT_SEC = int((os.getenv("OPENAI_TIMEOUT_SEC", "120") or "120").strip())
@@ -394,6 +408,8 @@ def call_openai_image_edit(
     prompt_parts.append(f"Objects: {', '.join(furniture_names[:6])}.")
     prompt_parts.append(f"Requested object rotations: {', '.join(rotations[:6])}.")
     prompt_parts.append("Do not move furniture position. Keep room geometry unchanged.")
+    if OPENAI_NEGATIVE_PROMPT:
+        prompt_parts.append(f"Negative prompt: {OPENAI_NEGATIVE_PROMPT}")
     prompt = " ".join(part for part in prompt_parts if part)
 
     endpoint = f"{OPENAI_BASE_URL.rstrip('/')}/images/edits"
