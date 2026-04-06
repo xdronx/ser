@@ -8,6 +8,10 @@ const statusText = document.getElementById("statusText");
 const renderBtn = document.getElementById("renderBtn");
 const clearBtn = document.getElementById("clearBtn");
 const downloadLink = document.getElementById("downloadLink");
+const renderProgressWrap = document.getElementById("renderProgressWrap");
+const renderProgressBar = document.getElementById("renderProgressBar");
+const renderProgressPercent = document.getElementById("renderProgressPercent");
+const renderProgressLabel = document.getElementById("renderProgressLabel");
 
 const searchInput = document.getElementById("searchInput");
 const categoryTabs = document.getElementById("categoryTabs");
@@ -45,6 +49,9 @@ let manualLayerOrdering = false;
 let activeSnapState = null;
 let dragState = null;
 let uidCounter = 1;
+let isRendering = false;
+let renderProgressValue = 0;
+let renderProgressTimer = null;
 
 const ratioCache = new Map();
 
@@ -184,13 +191,100 @@ function updateEmptyHint() {
 }
 
 function updateRenderButtonState() {
-  renderBtn.disabled = !(selectedRoomFile && sceneObjects.length > 0);
+  renderBtn.disabled = isRendering || !(selectedRoomFile && sceneObjects.length > 0);
 }
 
 function resetResult() {
   resultImage.removeAttribute("src");
   downloadLink.hidden = true;
   downloadLink.removeAttribute("href");
+  if (!isRendering) {
+    hideRenderProgress();
+  }
+}
+
+function clearRenderProgressTimer() {
+  if (renderProgressTimer) {
+    clearInterval(renderProgressTimer);
+    renderProgressTimer = null;
+  }
+}
+
+function setRenderProgress(value, labelText = "") {
+  renderProgressValue = clamp(Math.round(value), 0, 100);
+  renderProgressWrap.hidden = false;
+  renderProgressBar.style.width = `${renderProgressValue}%`;
+  renderProgressPercent.textContent = `${renderProgressValue}%`;
+  if (labelText) {
+    renderProgressLabel.textContent = labelText;
+  }
+  setStatus(`${renderProgressLabel.textContent} ${renderProgressPercent.textContent}`);
+}
+
+function hideRenderProgress() {
+  clearRenderProgressTimer();
+  renderProgressValue = 0;
+  renderProgressWrap.hidden = true;
+  renderProgressBar.style.width = "0%";
+  renderProgressPercent.textContent = "0%";
+  renderProgressLabel.textContent = "Нейросеть работает...";
+}
+
+function startProcessingProgress() {
+  clearRenderProgressTimer();
+  renderProgressTimer = setInterval(() => {
+    if (renderProgressValue >= 95) return;
+    const step = renderProgressValue < 80 ? 2 : 1;
+    setRenderProgress(renderProgressValue + step, "Нейросеть обрабатывает изображение...");
+  }, 550);
+}
+
+function sendRenderRequest(formData) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/render", true);
+    xhr.responseType = "json";
+
+    xhr.upload.addEventListener("loadstart", () => {
+      setRenderProgress(3, "Подготовка и отправка в нейросеть...");
+    });
+
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) return;
+      const uploadRatio = event.total > 0 ? event.loaded / event.total : 0;
+      const progressValue = 5 + uploadRatio * 45;
+      setRenderProgress(progressValue, "Загрузка изображения в нейросеть...");
+    });
+
+    xhr.upload.addEventListener("load", () => {
+      setRenderProgress(Math.max(renderProgressValue, 50), "Нейросеть получила данные...");
+      startProcessingProgress();
+    });
+
+    xhr.addEventListener("load", () => {
+      clearRenderProgressTimer();
+      const payload = xhr.response || {};
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setRenderProgress(100, "Готово! Финальное изображение получено.");
+        resolve(payload);
+        return;
+      }
+      const message = payload?.error || xhr.responseText || "Ошибка генерации";
+      reject(new Error(message));
+    });
+
+    xhr.addEventListener("error", () => {
+      clearRenderProgressTimer();
+      reject(new Error("Сетевая ошибка при обращении к нейросети"));
+    });
+
+    xhr.addEventListener("abort", () => {
+      clearRenderProgressTimer();
+      reject(new Error("Запрос к нейросети был прерван"));
+    });
+
+    xhr.send(formData);
+  });
 }
 
 function sortByLayerAsc(items) {
@@ -778,9 +872,10 @@ function handleRoomFileChange(event) {
 }
 
 async function handleRender() {
-  if (!selectedRoomFile || !sceneObjects.length) return;
-  renderBtn.disabled = true;
-  setStatus("Генерация...");
+  if (!selectedRoomFile || !sceneObjects.length || isRendering) return;
+  isRendering = true;
+  updateRenderButtonState();
+  setRenderProgress(1, "Запуск нейросети...");
   resetResult();
 
   const payloadSceneObjects = sortByLayerAsc(sceneObjects).map((obj) => ({
@@ -798,22 +893,18 @@ async function handleRender() {
   formData.append("scene_objects", JSON.stringify(payloadSceneObjects));
 
   try {
-    const response = await fetch("/api/render", {
-      method: "POST",
-      body: formData,
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || "Ошибка генерации");
-    }
+    const data = await sendRenderRequest(formData);
     resultImage.src = data.result_image_url;
     downloadLink.href = data.result_image_url;
+    downloadLink.setAttribute("download", `result-${Date.now()}.jpg`);
     downloadLink.hidden = false;
     setStatus(`Готово! Режим: ${data.provider}`);
   } catch (error) {
     console.error(error);
+    setRenderProgress(renderProgressValue, "Ошибка нейросети");
     setStatus(`Ошибка: ${error.message}`, true);
   } finally {
+    isRendering = false;
     updateRenderButtonState();
   }
 }
@@ -865,6 +956,7 @@ async function handleFurnitureUpload() {
 }
 
 function handleClear() {
+  if (isRendering) return;
   roomImageInput.value = "";
   if (selectedRoomUrl) URL.revokeObjectURL(selectedRoomUrl);
   selectedRoomUrl = "";

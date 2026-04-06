@@ -60,10 +60,20 @@
           </div>
 
           <div class="toolbar-right">
-            <a id="downloadLink" href="#" download hidden>Скачать</a>
+            <a id="downloadLink" class="download-btn" href="#" download hidden>Скачать результат</a>
             <button id="renderBtn" class="primary-btn" type="button" disabled>Сгенерировать</button>
           </div>
         </header>
+
+        <section id="renderProgressWrap" class="render-progress" hidden>
+          <div class="render-progress-top">
+            <span id="renderProgressLabel">Нейросеть работает...</span>
+            <strong id="renderProgressPercent">0%</strong>
+          </div>
+          <div class="render-progress-track">
+            <div id="renderProgressBar" class="render-progress-bar"></div>
+          </div>
+        </section>
 
         <div class="workspace-main">
           <div class="canvas-wrap">

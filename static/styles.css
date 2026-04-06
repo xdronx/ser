@@ -294,6 +294,37 @@ body {
   align-items: center;
 }
 
+.render-progress {
+  min-width: 250px;
+  max-width: 330px;
+  display: grid;
+  gap: 6px;
+}
+
+.render-progress-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #334155;
+}
+
+.render-progress-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #dbe3ef;
+}
+
+.render-progress-bar {
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #1d4ed8);
+  transition: width 0.24s ease;
+}
+
 .ghost-btn,
 .primary-btn {
   border: 1px solid var(--border);
@@ -646,13 +677,19 @@ body {
 }
 
 #downloadLink {
-  color: var(--accent-2);
+  color: #fff;
   font-size: 13px;
+  font-weight: 600;
   text-decoration: none;
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  border-radius: 8px;
-  padding: 6px 10px;
+  border: 1px solid #0f766e;
+  background: linear-gradient(180deg, #10b981, #059669);
+  border-radius: 9px;
+  padding: 8px 12px;
+  box-shadow: 0 3px 10px rgba(5, 150, 105, 0.2);
+}
+
+#downloadLink:hover {
+  filter: brightness(1.02);
 }
 
 #downloadLink[hidden] {
