@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import os
 import re
@@ -7,7 +8,7 @@ from pathlib import Path
 
 import requests
 from flask import Flask, jsonify, request, send_from_directory
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from dotenv import load_dotenv
 
 
@@ -26,6 +27,23 @@ load_dotenv(BASE_DIR / ".env")
 GENERATION_PROVIDER = os.getenv("GENERATION_PROVIDER", "mock").strip().lower()
 EXTERNAL_AI_WEBHOOK_URL = os.getenv("EXTERNAL_AI_WEBHOOK_URL", "").strip()
 EXTERNAL_AI_WEBHOOK_TOKEN = os.getenv("EXTERNAL_AI_WEBHOOK_TOKEN", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_BASE_URL = (
+    os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
+    or "https://api.openai.com/v1"
+)
+OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1").strip()
+OPENAI_IMAGE_SIZE = os.getenv("OPENAI_IMAGE_SIZE", "").strip()
+OPENAI_IMAGE_QUALITY = os.getenv("OPENAI_IMAGE_QUALITY", "").strip()
+OPENAI_REFINE_PROMPT = os.getenv(
+    "OPENAI_REFINE_PROMPT",
+    "Blend the furniture naturally into the room. Preserve geometry and placement. "
+    "Keep realistic contact shadows on the floor and match lighting and color tone.",
+).strip()
+try:
+    OPENAI_TIMEOUT_SEC = int((os.getenv("OPENAI_TIMEOUT_SEC", "120") or "120").strip())
+except ValueError:
+    OPENAI_TIMEOUT_SEC = 120
 
 
 def ensure_dirs() -> None:
@@ -87,14 +105,16 @@ def allowed_image(filename: str) -> bool:
     return ext in {".jpg", ".jpeg", ".png", ".webp"}
 
 
-def draw_mock_result(room_path: Path, furniture: dict, x: float, y: float) -> str:
-    image = Image.open(room_path).convert("RGB")
-    width, height = image.size
+def _compose_room_with_furniture(
+    room_path: Path, furniture: dict, x: float, y: float, add_shadow: bool = True
+) -> tuple[Image.Image, dict]:
+    image_rgba = Image.open(room_path).convert("RGBA")
+    width, height = image_rgba.size
     px = int(width * x)
     py = int(height * y)
 
-    draw = ImageDraw.Draw(image)
     asset_file = FURNITURE_DIR / furniture.get("asset_file", "")
+    metadata: dict = {"anchor_point": (px, py), "furniture_box": None, "shadow_box": None}
     if asset_file.exists():
         overlay = Image.open(asset_file).convert("RGBA")
         ow, oh = overlay.size
@@ -103,15 +123,31 @@ def draw_mock_result(room_path: Path, furniture: dict, x: float, y: float) -> st
         target_h = max(80, int(oh * scale))
         overlay = overlay.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
+        if add_shadow:
+            alpha = overlay.getchannel("A")
+            shadow_w = max(40, int(target_w * 1.05))
+            shadow_h = max(18, int(target_h * 0.24))
+            shadow_alpha = alpha.resize((shadow_w, shadow_h), Image.Resampling.BICUBIC)
+            shadow_alpha = shadow_alpha.filter(
+                ImageFilter.GaussianBlur(radius=max(4, int(target_w * 0.03)))
+            )
+            shadow_alpha = shadow_alpha.point(lambda a: int(a * 0.45))
+            shadow = Image.new("RGBA", (shadow_w, shadow_h), (0, 0, 0, 0))
+            shadow.putalpha(shadow_alpha)
+            shadow_x = px - shadow_w // 2
+            shadow_y = py - shadow_h // 2
+            image_rgba.alpha_composite(shadow, (shadow_x, shadow_y))
+            metadata["shadow_box"] = (shadow_x, shadow_y, shadow_x + shadow_w, shadow_y + shadow_h)
+
         # Anchor the object by its bottom center to the clicked point.
         x1 = px - target_w // 2
         y1 = py - target_h
-        image_rgba = image.convert("RGBA")
         image_rgba.paste(overlay, (x1, y1), overlay)
-        image = image_rgba.convert("RGB")
-        draw = ImageDraw.Draw(image)
+        metadata["furniture_box"] = (x1, y1, x1 + target_w, y1 + target_h)
     else:
         # Fallback marker if asset file is missing.
+        image = image_rgba.convert("RGB")
+        draw = ImageDraw.Draw(image)
         radius = max(12, min(width, height) // 40)
         draw.ellipse(
             (px - radius, py - radius, px + radius, py + radius),
@@ -119,7 +155,39 @@ def draw_mock_result(room_path: Path, furniture: dict, x: float, y: float) -> st
             outline=(255, 255, 255),
             width=3,
         )
+        metadata["furniture_box"] = (px - radius, py - radius, px + radius, py + radius)
+        return image, metadata
 
+    return image_rgba.convert("RGB"), metadata
+
+
+def _expand_box(box: tuple[int, int, int, int], margin: int, width: int, height: int) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = box
+    return (
+        max(0, x1 - margin),
+        max(0, y1 - margin),
+        min(width, x2 + margin),
+        min(height, y2 + margin),
+    )
+
+
+def _build_openai_mask(size: tuple[int, int], boxes: list[tuple[int, int, int, int]]) -> Image.Image:
+    width, height = size
+    mask = Image.new("RGBA", size, (255, 255, 255, 255))
+    draw = ImageDraw.Draw(mask)
+    for box in boxes:
+        x1, y1, x2, y2 = box
+        if x2 <= x1 or y2 <= y1:
+            continue
+        draw.rectangle((x1, y1, x2, y2), fill=(255, 255, 255, 0))
+    return mask
+
+
+def draw_mock_result(room_path: Path, furniture: dict, x: float, y: float) -> str:
+    image, metadata = _compose_room_with_furniture(room_path, furniture, x, y, add_shadow=True)
+    width, height = image.size
+    px, py = metadata["anchor_point"]
+    draw = ImageDraw.Draw(image)
     label = f"{furniture['name']}"
     font = ImageFont.load_default()
     try:
@@ -138,6 +206,103 @@ def draw_mock_result(room_path: Path, furniture: dict, x: float, y: float) -> st
     output_name = f"{uuid.uuid4().hex}.jpg"
     output_path = GENERATED_DIR / output_name
     image.save(output_path, format="JPEG", quality=90)
+    return output_name
+
+
+def call_openai_image_edit(room_path: Path, furniture: dict, x: float, y: float) -> str:
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY is empty. Add it to .env for openai mode.")
+
+    image, metadata = _compose_room_with_furniture(room_path, furniture, x, y, add_shadow=True)
+    width, height = image.size
+    boxes: list[tuple[int, int, int, int]] = []
+    for key in ("furniture_box", "shadow_box"):
+        box = metadata.get(key)
+        if box:
+            boxes.append(_expand_box(box, margin=32, width=width, height=height))
+
+    if not boxes:
+        px, py = metadata.get("anchor_point", (width // 2, height // 2))
+        fallback_box = (
+            max(0, px - 120),
+            max(0, py - 160),
+            min(width, px + 120),
+            min(height, py + 80),
+        )
+        boxes.append(fallback_box)
+
+    mask = _build_openai_mask(image.size, boxes)
+
+    image_bytes = io.BytesIO()
+    image.save(image_bytes, format="PNG")
+    image_bytes.seek(0)
+
+    mask_bytes = io.BytesIO()
+    mask.save(mask_bytes, format="PNG")
+    mask_bytes.seek(0)
+
+    prompt_parts = [OPENAI_REFINE_PROMPT.strip()]
+    furniture_prompt = (furniture.get("prompt") or "").strip()
+    if furniture_prompt:
+        prompt_parts.append(f"Furniture details: {furniture_prompt}")
+    prompt_parts.append("Do not move furniture position. Keep room geometry unchanged.")
+    prompt = " ".join(part for part in prompt_parts if part)
+
+    endpoint = f"{OPENAI_BASE_URL.rstrip('/')}/images/edits"
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    data = {
+        "model": OPENAI_IMAGE_MODEL or "gpt-image-1",
+        "prompt": prompt,
+        "response_format": "b64_json",
+        "n": "1",
+    }
+    if OPENAI_IMAGE_SIZE:
+        data["size"] = OPENAI_IMAGE_SIZE
+    if OPENAI_IMAGE_QUALITY:
+        data["quality"] = OPENAI_IMAGE_QUALITY
+
+    files = {
+        "image": ("composite.png", image_bytes.getvalue(), "image/png"),
+        "mask": ("mask.png", mask_bytes.getvalue(), "image/png"),
+    }
+    response = requests.post(
+        endpoint,
+        headers=headers,
+        data=data,
+        files=files,
+        timeout=OPENAI_TIMEOUT_SEC,
+    )
+
+    if response.status_code >= 400:
+        try:
+            err = response.json()
+            message = err.get("error", {}).get("message") or err
+        except Exception:
+            message = response.text
+        raise ValueError(f"OpenAI image edit failed: {message}")
+
+    content_type = (response.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        payload = response.json()
+        data_list = payload.get("data") or []
+        if not data_list:
+            raise ValueError("OpenAI returned empty data list.")
+        first = data_list[0]
+        if "b64_json" in first:
+            result_bytes = base64.b64decode(first["b64_json"])
+        elif "url" in first:
+            image_resp = requests.get(first["url"], timeout=OPENAI_TIMEOUT_SEC)
+            image_resp.raise_for_status()
+            result_bytes = image_resp.content
+        else:
+            raise ValueError("OpenAI response missing b64_json/url image field.")
+    else:
+        result_bytes = response.content
+
+    output_name = f"{uuid.uuid4().hex}.jpg"
+    output_path = GENERATED_DIR / output_name
+    result_image = Image.open(io.BytesIO(result_bytes)).convert("RGB")
+    result_image.save(output_path, format="JPEG", quality=92)
     return output_name
 
 
@@ -243,7 +408,13 @@ def api_upload_furniture():
 
 @app.route("/api/health", methods=["GET"])
 def api_health():
-    return jsonify({"ok": True, "provider": GENERATION_PROVIDER})
+    return jsonify(
+        {
+            "ok": True,
+            "provider": GENERATION_PROVIDER,
+            "openai_configured": bool(OPENAI_API_KEY),
+        }
+    )
 
 
 @app.route("/api/render", methods=["POST"])
@@ -282,6 +453,8 @@ def api_render():
     try:
         if GENERATION_PROVIDER == "webhook":
             output_name = call_external_webhook(upload_path, furniture, x, y)
+        elif GENERATION_PROVIDER == "openai":
+            output_name = call_openai_image_edit(upload_path, furniture, x, y)
         else:
             output_name = draw_mock_result(upload_path, furniture, x, y)
     except Exception as exc:

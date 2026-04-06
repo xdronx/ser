@@ -27,12 +27,16 @@
 
 ## Варианты режима генерации
 
-Есть 2 режима:
+Есть 3 режима:
 
 1. `mock` (по умолчанию)  
-   Работает сразу без внешней нейросети. На фото комнаты ставится маркер и подпись выбранной мебели.
+   Локальная генерация: накладывает мебель и тень на фото комнаты.
 
-2. `webhook`  
+2. `openai`  
+   Локальная композиция + дообработка через OpenAI Image API для более органичного результата
+   (свет/цвет/тень и интеграция в интерьер).
+
+3. `webhook`  
    Отправляет изображение комнаты + выбранную мебель + координаты в твой внешний AI API.
 
 ---
@@ -69,6 +73,13 @@ cp .env.example .env
 GENERATION_PROVIDER=mock
 EXTERNAL_AI_WEBHOOK_URL=
 EXTERNAL_AI_WEBHOOK_TOKEN=
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_IMAGE_MODEL=gpt-image-1
+OPENAI_IMAGE_SIZE=
+OPENAI_IMAGE_QUALITY=
+OPENAI_TIMEOUT_SEC=120
+OPENAI_REFINE_PROMPT=Blend the furniture naturally into the room. Preserve geometry and placement. Keep realistic contact shadows on the floor and match lighting and color tone.
 ```
 
 ---
@@ -172,6 +183,45 @@ python3 app.py
 `http://127.0.0.1:5000/api/health`
 
 Должен вернуться JSON с `ok: true`.
+
+---
+
+## Подключение OpenAI API (режим openai)
+
+Чтобы получить более реалистичную интеграцию мебели:
+
+1. Получи API-ключ OpenAI.
+2. Открой `.env` и поставь:
+
+```env
+GENERATION_PROVIDER=openai
+OPENAI_API_KEY=твой_ключ
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_IMAGE_MODEL=gpt-image-1
+OPENAI_IMAGE_SIZE=
+OPENAI_IMAGE_QUALITY=
+OPENAI_TIMEOUT_SEC=120
+OPENAI_REFINE_PROMPT=Blend the furniture naturally into the room. Preserve geometry and placement. Keep realistic contact shadows on the floor and match lighting and color tone.
+```
+
+3. Перезапусти сервер:
+
+```bash
+python3 app.py
+```
+
+4. Открой `http://127.0.0.1:5000/api/health` и проверь, что:
+- `"provider": "openai"`
+- `"openai_configured": true`
+
+### Как это работает внутри
+
+1. Локально собирается базовый композит:
+   - мебель ставится в выбранную точку;
+   - добавляется контактная тень.
+2. Формируется маска области мебели/тени.
+3. Этот композит + маска отправляются в OpenAI `/images/edits`.
+4. OpenAI делает реалистичную дообработку и возвращает финальное изображение.
 
 ---
 
