@@ -535,22 +535,37 @@ def call_openai_image_edit(
 
 def call_openai_remove_furniture(
     room_path: Path,
-    remove_box: tuple[float, float, float, float],
+    remove_box: tuple[float, float, float, float] | None = None,
+    remove_mask_image: bytes | None = None,
 ) -> str:
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY is empty. Add it to .env for openai mode.")
 
     image = Image.open(room_path).convert("RGB")
     width, height = image.size
-    x1n, y1n, x2n, y2n = remove_box
-    target_box = (
-        int(width * x1n),
-        int(height * y1n),
-        int(width * x2n),
-        int(height * y2n),
-    )
-    target_box = _expand_box(target_box, margin=24, width=width, height=height)
-    mask = _build_openai_mask(image.size, [target_box])
+    if remove_mask_image:
+        raw_mask = Image.open(io.BytesIO(remove_mask_image)).convert("RGBA")
+        if raw_mask.size != image.size:
+            raw_mask = raw_mask.resize(image.size, Image.Resampling.BILINEAR)
+        alpha = raw_mask.getchannel("A")
+        editable = alpha.point(lambda a: 255 if a > 10 else 0)
+        if not editable.getbbox():
+            raise ValueError("remove mask is empty")
+        inverse_alpha = editable.point(lambda p: 255 - p)
+        mask = Image.new("RGBA", image.size, (255, 255, 255, 255))
+        mask.putalpha(inverse_alpha)
+    elif remove_box:
+        x1n, y1n, x2n, y2n = remove_box
+        target_box = (
+            int(width * x1n),
+            int(height * y1n),
+            int(width * x2n),
+            int(height * y2n),
+        )
+        target_box = _expand_box(target_box, margin=24, width=width, height=height)
+        mask = _build_openai_mask(image.size, [target_box])
+    else:
+        raise ValueError("remove_box or remove_mask_image is required")
 
     image_bytes = io.BytesIO()
     image.save(image_bytes, format="PNG")
@@ -659,25 +674,37 @@ def call_openai_remove_furniture(
 
 def draw_local_remove_furniture(
     room_path: Path,
-    remove_box: tuple[float, float, float, float],
+    remove_box: tuple[float, float, float, float] | None = None,
+    remove_mask_image: bytes | None = None,
 ) -> str:
     image = Image.open(room_path).convert("RGB")
     width, height = image.size
-    x1n, y1n, x2n, y2n = remove_box
-    box = (
-        int(width * x1n),
-        int(height * y1n),
-        int(width * x2n),
-        int(height * y2n),
-    )
-    box = _expand_box(box, margin=6, width=width, height=height)
 
     blur_radius = max(10, min(width, height) // 80)
     blurred = image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    mask = Image.new("L", image.size, 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rectangle(box, fill=255)
-    mask = mask.filter(ImageFilter.GaussianBlur(radius=max(6, blur_radius // 2)))
+    if remove_mask_image:
+        raw_mask = Image.open(io.BytesIO(remove_mask_image)).convert("RGBA")
+        if raw_mask.size != image.size:
+            raw_mask = raw_mask.resize(image.size, Image.Resampling.BILINEAR)
+        mask = raw_mask.getchannel("A")
+        if not mask.getbbox():
+            raise ValueError("remove mask is empty")
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=max(6, blur_radius // 2)))
+    elif remove_box:
+        x1n, y1n, x2n, y2n = remove_box
+        box = (
+            int(width * x1n),
+            int(height * y1n),
+            int(width * x2n),
+            int(height * y2n),
+        )
+        box = _expand_box(box, margin=6, width=width, height=height)
+        mask = Image.new("L", image.size, 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rectangle(box, fill=255)
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=max(6, blur_radius // 2)))
+    else:
+        raise ValueError("remove_box or remove_mask_image is required")
     result = Image.composite(blurred, image, mask)
 
     output_name = f"{uuid.uuid4().hex}.jpg"
@@ -828,33 +855,46 @@ def api_remove_furniture():
     ensure_dirs()
     room_file = request.files.get("room_image")
     remove_box_raw = (request.form.get("remove_box") or "").strip()
+    remove_mask_file = request.files.get("remove_mask")
 
     if not room_file or not room_file.filename:
         return jsonify({"error": "room_image file is required"}), 400
     if not allowed_image(room_file.filename):
         return jsonify({"error": "Only jpg, jpeg, png, webp are allowed"}), 400
-    if not remove_box_raw:
-        return jsonify({"error": "remove_box is required"}), 400
+    if not remove_box_raw and not remove_mask_file:
+        return jsonify({"error": "remove_box or remove_mask is required"}), 400
 
-    try:
-        remove_box_payload = json.loads(remove_box_raw)
-    except json.JSONDecodeError:
-        return jsonify({"error": "remove_box must be valid JSON object"}), 400
-    if not isinstance(remove_box_payload, dict):
-        return jsonify({"error": "remove_box must be object"}), 400
+    remove_box: tuple[float, float, float, float] | None = None
+    if remove_box_raw:
+        try:
+            remove_box_payload = json.loads(remove_box_raw)
+        except json.JSONDecodeError:
+            return jsonify({"error": "remove_box must be valid JSON object"}), 400
+        if not isinstance(remove_box_payload, dict):
+            return jsonify({"error": "remove_box must be object"}), 400
 
-    try:
-        x1 = float(remove_box_payload.get("x1"))
-        y1 = float(remove_box_payload.get("y1"))
-        x2 = float(remove_box_payload.get("x2"))
-        y2 = float(remove_box_payload.get("y2"))
-    except (TypeError, ValueError):
-        return jsonify({"error": "remove_box x1,y1,x2,y2 must be numbers"}), 400
+        try:
+            x1 = float(remove_box_payload.get("x1"))
+            y1 = float(remove_box_payload.get("y1"))
+            x2 = float(remove_box_payload.get("x2"))
+            y2 = float(remove_box_payload.get("y2"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "remove_box x1,y1,x2,y2 must be numbers"}), 400
 
-    if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1):
-        return jsonify({"error": "remove_box coordinates must satisfy 0<=x1<x2<=1 and 0<=y1<y2<=1"}), 400
-    if (x2 - x1) < 0.01 or (y2 - y1) < 0.01:
-        return jsonify({"error": "remove_box is too small"}), 400
+        if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1):
+            return jsonify({"error": "remove_box coordinates must satisfy 0<=x1<x2<=1 and 0<=y1<y2<=1"}), 400
+        if (x2 - x1) < 0.01 or (y2 - y1) < 0.01:
+            return jsonify({"error": "remove_box is too small"}), 400
+        remove_box = (x1, y1, x2, y2)
+
+    remove_mask_bytes: bytes | None = None
+    if remove_mask_file and remove_mask_file.filename:
+        try:
+            remove_mask_bytes = remove_mask_file.read()
+        except Exception:
+            return jsonify({"error": "failed to read remove_mask file"}), 400
+        if not remove_mask_bytes:
+            return jsonify({"error": "remove_mask is empty"}), 400
 
     room_ext = Path(room_file.filename).suffix.lower()
     upload_name = f"{uuid.uuid4().hex}{room_ext}"
@@ -864,14 +904,26 @@ def api_remove_furniture():
     provider = "local-inpaint"
     try:
         if OPENAI_API_KEY:
-            output_name = call_openai_remove_furniture(upload_path, (x1, y1, x2, y2))
+            output_name = call_openai_remove_furniture(
+                upload_path,
+                remove_box=remove_box,
+                remove_mask_image=remove_mask_bytes,
+            )
             provider = "openai-inpaint"
         else:
-            output_name = draw_local_remove_furniture(upload_path, (x1, y1, x2, y2))
+            output_name = draw_local_remove_furniture(
+                upload_path,
+                remove_box=remove_box,
+                remove_mask_image=remove_mask_bytes,
+            )
     except Exception as exc:
         if OPENAI_API_KEY:
             try:
-                output_name = draw_local_remove_furniture(upload_path, (x1, y1, x2, y2))
+                output_name = draw_local_remove_furniture(
+                    upload_path,
+                    remove_box=remove_box,
+                    remove_mask_image=remove_mask_bytes,
+                )
                 provider = "local-inpaint-fallback"
             except Exception:
                 return jsonify({"error": f"Remove furniture failed: {exc}"}), 500

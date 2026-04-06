@@ -292,6 +292,17 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.brush-size-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brush-size-wrap input[type="range"] {
+  width: 92px;
 }
 
 .render-progress {
@@ -447,6 +458,17 @@ body {
   border: 2px dashed #ef4444;
   background: rgba(239, 68, 68, 0.12);
   border-radius: 4px;
+}
+
+.remove-mask-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+}
+
+.remove-mask-canvas.active {
+  display: block;
 }
 
 #roomPreview:not([src]),
@@ -690,6 +712,58 @@ body {
 .layer-actions button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.compare-wrap {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: #fff;
+  padding: 10px 16px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.compare-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #334155;
+}
+
+.compare-stage {
+  position: relative;
+  width: min(100%, 760px);
+  aspect-ratio: 16 / 9;
+  border: 1px solid #d9dee8;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+.compare-stage img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.compare-after-clip {
+  position: absolute;
+  inset: 0;
+  width: 50%;
+  overflow: hidden;
+}
+
+.compare-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  left: 50%;
+  background: #3b82f6;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25);
 }
 
 .bottom-status {
