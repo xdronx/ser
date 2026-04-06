@@ -21,6 +21,7 @@ STATIC_DIR = BASE_DIR / "static"
 
 CATALOG_FILE = FURNITURE_DIR / "catalog.json"
 FURNITURE_PACK_FILE = FURNITURE_DIR / "furniture_pack.zip"
+PROCESSED_FURNITURE_DIR = GENERATED_DIR / "processed_furniture"
 
 load_dotenv(BASE_DIR / ".env")
 
@@ -45,10 +46,13 @@ try:
     OPENAI_TIMEOUT_SEC = int((os.getenv("OPENAI_TIMEOUT_SEC", "120") or "120").strip())
 except ValueError:
     OPENAI_TIMEOUT_SEC = 120
+AUTO_REMOVE_FURNITURE_BG = (
+    os.getenv("AUTO_REMOVE_FURNITURE_BG", "true").strip().lower() not in {"0", "false", "no"}
+)
 
 
 def ensure_dirs() -> None:
-    for folder in (UPLOADS_DIR, GENERATED_DIR):
+    for folder in (UPLOADS_DIR, GENERATED_DIR, PROCESSED_FURNITURE_DIR):
         folder.mkdir(parents=True, exist_ok=True)
 
 
@@ -106,6 +110,103 @@ def allowed_image(filename: str) -> bool:
     return ext in {".jpg", ".jpeg", ".png", ".webp"}
 
 
+def _has_meaningful_alpha(image: Image.Image) -> bool:
+    if image.mode != "RGBA":
+        return False
+    alpha = image.getchannel("A")
+    extrema = alpha.getextrema()
+    if not extrema:
+        return False
+    return extrema[0] < 245
+
+
+def _auto_remove_background(image_rgba: Image.Image) -> Image.Image:
+    width, height = image_rgba.size
+    if width < 3 or height < 3:
+        return image_rgba
+
+    marker_color = (255, 0, 255)
+    threshold = 26
+    working = image_rgba.convert("RGB").copy()
+    step = max(6, min(width, height) // 40)
+    seeds: set[tuple[int, int]] = set()
+
+    for x in range(0, width, step):
+        seeds.add((x, 0))
+        seeds.add((x, height - 1))
+    for y in range(0, height, step):
+        seeds.add((0, y))
+        seeds.add((width - 1, y))
+    seeds.update(
+        {
+            (0, 0),
+            (width - 1, 0),
+            (0, height - 1),
+            (width - 1, height - 1),
+            (width // 2, 0),
+            (width // 2, height - 1),
+            (0, height // 2),
+            (width - 1, height // 2),
+        }
+    )
+
+    for seed in seeds:
+        try:
+            ImageDraw.floodfill(working, seed, marker_color, thresh=threshold)
+        except Exception:
+            continue
+
+    bg_mask = Image.new("L", (width, height), 0)
+    working_px = working.load()
+    mask_px = bg_mask.load()
+    for y in range(height):
+        for x in range(width):
+            if working_px[x, y] == marker_color:
+                mask_px[x, y] = 255
+
+    bg_pixels = bg_mask.histogram()[255]
+    total_pixels = width * height
+    if bg_pixels <= int(total_pixels * 0.01):
+        return image_rgba
+
+    blur_radius = max(1, min(width, height) // 300)
+    soft_bg = bg_mask.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    alpha = soft_bg.point(lambda p: max(0, 255 - p))
+
+    result = image_rgba.copy()
+    result.putalpha(alpha)
+    return result
+
+
+def get_processed_furniture_asset(asset_file: Path) -> Path:
+    if not asset_file.exists():
+        return asset_file
+    if not AUTO_REMOVE_FURNITURE_BG:
+        return asset_file
+
+    ensure_dirs()
+    try:
+        version = str(asset_file.stat().st_mtime_ns)
+        processed_path = PROCESSED_FURNITURE_DIR / f"{asset_file.stem}-{version}.png"
+        if processed_path.exists():
+            return processed_path
+
+        source = Image.open(asset_file).convert("RGBA")
+        if _has_meaningful_alpha(source):
+            processed = source
+        else:
+            processed = _auto_remove_background(source)
+
+        alpha_bbox = processed.getchannel("A").getbbox()
+        if alpha_bbox:
+            processed = processed.crop(alpha_bbox)
+
+        processed.save(processed_path, format="PNG")
+        return processed_path
+    except Exception:
+        return asset_file
+
+
 def _compose_room_with_furniture(
     room_path: Path, furniture: dict, x: float, y: float, add_shadow: bool = True
 ) -> tuple[Image.Image, dict]:
@@ -117,7 +218,8 @@ def _compose_room_with_furniture(
     asset_file = FURNITURE_DIR / furniture.get("asset_file", "")
     metadata: dict = {"anchor_point": (px, py), "furniture_box": None, "shadow_box": None}
     if asset_file.exists():
-        overlay = Image.open(asset_file).convert("RGBA")
+        processed_asset = get_processed_furniture_asset(asset_file)
+        overlay = Image.open(processed_asset).convert("RGBA")
         ow, oh = overlay.size
         target_w = max(80, min(int(width * 0.28), int(width * 0.6)))
         scale = target_w / ow
