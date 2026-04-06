@@ -214,16 +214,15 @@ def get_processed_furniture_asset(asset_file: Path) -> Path:
         return asset_file
 
 
-def _compose_room_with_furniture(
-    room_path: Path,
+def _paste_furniture_on_canvas(
+    image_rgba: Image.Image,
     furniture: dict,
     x: float,
     y: float,
     add_shadow: bool = True,
     scale: float = 1.0,
     rotation_deg: float = 0.0,
-) -> tuple[Image.Image, dict]:
-    image_rgba = Image.open(room_path).convert("RGBA")
+) -> dict:
     width, height = image_rgba.size
     px = int(width * x)
     py = int(height * y)
@@ -280,9 +279,35 @@ def _compose_room_with_furniture(
             width=3,
         )
         metadata["furniture_box"] = (px - radius, py - radius, px + radius, py + radius)
-        return image, metadata
+    return metadata
 
-    return image_rgba.convert("RGB"), metadata
+
+def _compose_room_with_scene(
+    room_path: Path,
+    scene_objects: list[dict],
+    add_shadow: bool = True,
+) -> tuple[Image.Image, list[dict]]:
+    image_rgba = Image.open(room_path).convert("RGBA")
+    if not scene_objects:
+        return image_rgba.convert("RGB"), []
+
+    # Farther objects (smaller y) should render first, closer objects render last on top.
+    ordered = sorted(scene_objects, key=lambda obj: float(obj.get("y", 0)))
+    metadata_list: list[dict] = []
+    for obj in ordered:
+        metadata = _paste_furniture_on_canvas(
+            image_rgba=image_rgba,
+            furniture=obj["furniture"],
+            x=float(obj["x"]),
+            y=float(obj["y"]),
+            add_shadow=add_shadow,
+            scale=float(obj.get("scale", 1.0)),
+            rotation_deg=float(obj.get("rotation_deg", 0.0)),
+        )
+        metadata["scene_object_id"] = obj.get("id")
+        metadata["furniture_name"] = obj["furniture"].get("name", "")
+        metadata_list.append(metadata)
+    return image_rgba.convert("RGB"), metadata_list
 
 
 def _expand_box(box: tuple[int, int, int, int], margin: int, width: int, height: int) -> tuple[int, int, int, int]:
@@ -307,36 +332,8 @@ def _build_openai_mask(size: tuple[int, int], boxes: list[tuple[int, int, int, i
     return mask
 
 
-def draw_mock_result(
-    room_path: Path, furniture: dict, x: float, y: float, scale: float, rotation_deg: float
-) -> str:
-    image, metadata = _compose_room_with_furniture(
-        room_path,
-        furniture,
-        x,
-        y,
-        add_shadow=True,
-        scale=scale,
-        rotation_deg=rotation_deg,
-    )
-    width, height = image.size
-    px, py = metadata["anchor_point"]
-    draw = ImageDraw.Draw(image)
-    label = f"{furniture['name']}"
-    font = ImageFont.load_default()
-    try:
-        left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
-        text_w, text_h = right - left, bottom - top
-    except AttributeError:
-        text_w, text_h = draw.textsize(label, font=font)
-    pad = 6
-    bx1 = max(0, px + 8)
-    by1 = max(0, py - text_h - 16)
-    bx2 = min(width, bx1 + text_w + pad * 2)
-    by2 = min(height, by1 + text_h + pad * 2)
-    draw.rectangle((bx1, by1, bx2, by2), fill=(20, 20, 20))
-    draw.text((bx1 + pad, by1 + pad), label, fill=(255, 255, 255), font=font)
-
+def draw_mock_result(room_path: Path, scene_objects: list[dict]) -> str:
+    image, _ = _compose_room_with_scene(room_path, scene_objects, add_shadow=True)
     output_name = f"{uuid.uuid4().hex}.jpg"
     output_path = GENERATED_DIR / output_name
     image.save(output_path, format="JPEG", quality=90)
@@ -345,33 +342,24 @@ def draw_mock_result(
 
 def call_openai_image_edit(
     room_path: Path,
-    furniture: dict,
-    x: float,
-    y: float,
-    scale: float,
-    rotation_deg: float,
+    scene_objects: list[dict],
 ) -> str:
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY is empty. Add it to .env for openai mode.")
 
-    image, metadata = _compose_room_with_furniture(
-        room_path,
-        furniture,
-        x,
-        y,
-        add_shadow=True,
-        scale=scale,
-        rotation_deg=rotation_deg,
-    )
+    image, metadata_list = _compose_room_with_scene(room_path, scene_objects, add_shadow=True)
     width, height = image.size
     boxes: list[tuple[int, int, int, int]] = []
-    for key in ("furniture_box", "shadow_box"):
-        box = metadata.get(key)
-        if box:
-            boxes.append(_expand_box(box, margin=32, width=width, height=height))
+    for metadata in metadata_list:
+        for key in ("furniture_box", "shadow_box"):
+            box = metadata.get(key)
+            if box:
+                boxes.append(_expand_box(box, margin=32, width=width, height=height))
 
     if not boxes:
-        px, py = metadata.get("anchor_point", (width // 2, height // 2))
+        px, py = (width // 2, height // 2)
+        if metadata_list:
+            px, py = metadata_list[0].get("anchor_point", (width // 2, height // 2))
         fallback_box = (
             max(0, px - 120),
             max(0, py - 160),
@@ -391,10 +379,20 @@ def call_openai_image_edit(
     mask_bytes.seek(0)
 
     prompt_parts = [OPENAI_REFINE_PROMPT.strip()]
-    furniture_prompt = (furniture.get("prompt") or "").strip()
-    if furniture_prompt:
-        prompt_parts.append(f"Furniture details: {furniture_prompt}")
-    prompt_parts.append(f"Requested furniture rotation angle: {rotation_deg:.1f} degrees.")
+    furniture_prompts: list[str] = []
+    furniture_names: list[str] = []
+    rotations: list[str] = []
+    for obj in scene_objects:
+        furniture = obj["furniture"]
+        furniture_names.append(furniture.get("name", "item"))
+        p = (furniture.get("prompt") or "").strip()
+        if p:
+            furniture_prompts.append(p)
+        rotations.append(f"{float(obj.get('rotation_deg', 0.0)):.1f}deg")
+    if furniture_prompts:
+        prompt_parts.append(f"Furniture details: {'; '.join(furniture_prompts[:6])}")
+    prompt_parts.append(f"Objects: {', '.join(furniture_names[:6])}.")
+    prompt_parts.append(f"Requested object rotations: {', '.join(rotations[:6])}.")
     prompt_parts.append("Do not move furniture position. Keep room geometry unchanged.")
     prompt = " ".join(part for part in prompt_parts if part)
 
@@ -487,11 +485,7 @@ def call_openai_image_edit(
 
 def call_external_webhook(
     room_path: Path,
-    furniture: dict,
-    x: float,
-    y: float,
-    scale: float,
-    rotation_deg: float,
+    scene_objects: list[dict],
 ) -> str:
     if not EXTERNAL_AI_WEBHOOK_URL:
         raise ValueError(
@@ -499,16 +493,37 @@ def call_external_webhook(
         )
 
     room_bytes = room_path.read_bytes()
-    furniture_file = FURNITURE_DIR / furniture["asset_file"]
-    furniture_bytes = furniture_file.read_bytes() if furniture_file.exists() else b""
+    payload_objects: list[dict] = []
+    for obj in scene_objects:
+        furniture = obj["furniture"]
+        furniture_file = FURNITURE_DIR / furniture["asset_file"]
+        furniture_bytes = furniture_file.read_bytes() if furniture_file.exists() else b""
+        payload_objects.append(
+            {
+                "furniture_id": furniture["id"],
+                "furniture_name": furniture["name"],
+                "placement": {
+                    "x": float(obj["x"]),
+                    "y": float(obj["y"]),
+                    "scale": float(obj.get("scale", 1.0)),
+                    "rotation_deg": float(obj.get("rotation_deg", 0.0)),
+                },
+                "furniture_asset_base64": base64.b64encode(furniture_bytes).decode("utf-8"),
+                "furniture_prompt": furniture.get("prompt", ""),
+            }
+        )
 
+    first = payload_objects[0] if payload_objects else {}
     payload = {
-        "furniture_id": furniture["id"],
-        "furniture_name": furniture["name"],
-        "placement": {"x": x, "y": y, "scale": scale, "rotation_deg": rotation_deg},
+        # Extended payload with full scene for multi-object placement.
+        "scene_objects": payload_objects,
         "room_image_base64": base64.b64encode(room_bytes).decode("utf-8"),
-        "furniture_asset_base64": base64.b64encode(furniture_bytes).decode("utf-8"),
-        "furniture_prompt": furniture.get("prompt", ""),
+        # Backward compatible keys based on first object.
+        "furniture_id": first.get("furniture_id"),
+        "furniture_name": first.get("furniture_name"),
+        "placement": first.get("placement"),
+        "furniture_asset_base64": first.get("furniture_asset_base64"),
+        "furniture_prompt": first.get("furniture_prompt"),
     }
     headers = {"Content-Type": "application/json"}
     if EXTERNAL_AI_WEBHOOK_TOKEN:
@@ -608,37 +623,91 @@ def api_health():
 def api_render():
     ensure_dirs()
     room_file = request.files.get("room_image")
-    furniture_id = (request.form.get("furniture_id") or "").strip()
-    x_raw = (request.form.get("x") or "").strip()
-    y_raw = (request.form.get("y") or "").strip()
-    scale_raw = (request.form.get("scale") or "1").strip()
-    rotation_raw = (request.form.get("rotation_deg") or "0").strip()
+    scene_objects_raw = (request.form.get("scene_objects") or "").strip()
 
     if not room_file or not room_file.filename:
         return jsonify({"error": "room_image file is required"}), 400
     if not allowed_image(room_file.filename):
         return jsonify({"error": "Only jpg, jpeg, png, webp are allowed"}), 400
-    if not furniture_id:
-        return jsonify({"error": "furniture_id is required"}), 400
 
-    furniture = get_furniture_item(furniture_id)
-    if not furniture:
-        return jsonify({"error": "Unknown furniture_id"}), 400
+    scene_objects_input: list[dict]
+    if scene_objects_raw:
+        try:
+            parsed = json.loads(scene_objects_raw)
+        except json.JSONDecodeError:
+            return jsonify({"error": "scene_objects must be valid JSON array"}), 400
+        if not isinstance(parsed, list) or len(parsed) == 0:
+            return jsonify({"error": "scene_objects must be a non-empty array"}), 400
+        scene_objects_input = parsed
+    else:
+        # Backward-compatible single-object format.
+        furniture_id = (request.form.get("furniture_id") or "").strip()
+        x_raw = (request.form.get("x") or "").strip()
+        y_raw = (request.form.get("y") or "").strip()
+        scale_raw = (request.form.get("scale") or "1").strip()
+        rotation_raw = (
+            (request.form.get("rotation_deg") or request.form.get("rotation") or "0").strip()
+        )
+        if not furniture_id:
+            return jsonify({"error": "furniture_id is required"}), 400
+        scene_objects_input = [
+            {
+                "furniture_id": furniture_id,
+                "x": x_raw,
+                "y": y_raw,
+                "scale": scale_raw,
+                "rotation_deg": rotation_raw,
+            }
+        ]
 
-    try:
-        x = float(x_raw)
-        y = float(y_raw)
-        scale = float(scale_raw)
-        rotation_deg = float(rotation_raw)
-    except ValueError:
-        return jsonify({"error": "x, y, scale and rotation_deg must be numbers"}), 400
+    if len(scene_objects_input) > 6:
+        return jsonify({"error": "scene can contain at most 6 objects"}), 400
 
-    if x < 0 or x > 1 or y < 0 or y > 1:
-        return jsonify({"error": "x and y must be in range 0..1"}), 400
-    if scale < 0.5 or scale > 2.0:
-        return jsonify({"error": "scale must be in range 0.5..2.0"}), 400
-    if rotation_deg < -180 or rotation_deg > 180:
-        return jsonify({"error": "rotation_deg must be in range -180..180"}), 400
+    scene_objects: list[dict] = []
+    for idx, raw_obj in enumerate(scene_objects_input):
+        if not isinstance(raw_obj, dict):
+            return jsonify({"error": f"scene_objects[{idx}] must be object"}), 400
+
+        furniture_id = str(raw_obj.get("furniture_id") or "").strip()
+        if not furniture_id:
+            return jsonify({"error": f"scene_objects[{idx}].furniture_id is required"}), 400
+
+        furniture = get_furniture_item(furniture_id)
+        if not furniture:
+            return jsonify({"error": f"Unknown furniture_id at scene_objects[{idx}]"}), 400
+
+        try:
+            x = float(raw_obj.get("x"))
+            y = float(raw_obj.get("y"))
+            scale = float(raw_obj.get("scale", 1))
+            rotation_deg = float(raw_obj.get("rotation_deg", raw_obj.get("rotation", 0)))
+        except (TypeError, ValueError):
+            return jsonify(
+                {
+                    "error": f"scene_objects[{idx}] x, y, scale, rotation_deg must be numbers"
+                }
+            ), 400
+
+        if x < 0 or x > 1 or y < 0 or y > 1:
+            return jsonify({"error": f"scene_objects[{idx}] x and y must be in range 0..1"}), 400
+        if scale < 0.5 or scale > 2.0:
+            return jsonify({"error": f"scene_objects[{idx}] scale must be in range 0.5..2.0"}), 400
+        if rotation_deg < -180 or rotation_deg > 180:
+            return jsonify(
+                {"error": f"scene_objects[{idx}] rotation_deg must be in range -180..180"}
+            ), 400
+
+        scene_objects.append(
+            {
+                "id": raw_obj.get("id", f"obj-{idx}"),
+                "furniture_id": furniture_id,
+                "furniture": furniture,
+                "x": x,
+                "y": y,
+                "scale": scale,
+                "rotation_deg": rotation_deg,
+            }
+        )
 
     room_ext = Path(room_file.filename).suffix.lower()
     upload_name = f"{uuid.uuid4().hex}{room_ext}"
@@ -647,17 +716,11 @@ def api_render():
 
     try:
         if GENERATION_PROVIDER == "webhook":
-            output_name = call_external_webhook(
-                upload_path, furniture, x, y, scale, rotation_deg
-            )
+            output_name = call_external_webhook(upload_path, scene_objects)
         elif GENERATION_PROVIDER == "openai":
-            output_name = call_openai_image_edit(
-                upload_path, furniture, x, y, scale, rotation_deg
-            )
+            output_name = call_openai_image_edit(upload_path, scene_objects)
         else:
-            output_name = draw_mock_result(
-                upload_path, furniture, x, y, scale, rotation_deg
-            )
+            output_name = draw_mock_result(upload_path, scene_objects)
     except Exception as exc:
         return jsonify({"error": f"Generation failed: {exc}"}), 500
 

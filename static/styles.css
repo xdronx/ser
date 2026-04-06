@@ -358,11 +358,12 @@ body {
 
 .snap-guide {
   position: absolute;
-  display: none;
+  opacity: 0;
+  transition: opacity 0.22s ease;
 }
 
 .snap-guide.active {
-  display: block;
+  opacity: 1;
 }
 
 .snap-guide.vertical {
@@ -420,10 +421,12 @@ body {
   user-select: none;
   touch-action: none;
   z-index: 5;
+  transition: filter 0.15s ease;
 }
 
 .scene-object.dragging {
   cursor: grabbing;
+  filter: drop-shadow(0 8px 18px rgba(30, 64, 175, 0.2));
 }
 
 .scene-object img {
@@ -458,6 +461,10 @@ body {
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
+}
+
+.scene-controls button:hover {
+  background: #dbeafe;
 }
 
 .scene-scale-label {

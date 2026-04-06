@@ -27,12 +27,10 @@ let furnitureItems = [];
 let selectedCategory = "all";
 let searchQuery = "";
 
-// Single active object on the scene (can be moved, resized, rotated)
-let sceneObject = null; // { furnitureId, x, y, scale, rotation }
-let sceneObjectEl = null;
-let sceneObjectImg = null;
-let sceneScaleLabel = null;
-let sceneRotationLabel = null;
+// Multiple scene objects (max 6) with active selection
+const MAX_SCENE_OBJECTS = 6;
+let sceneObjects = []; // [{ id, furnitureId, x, y, scale, rotation }]
+let activeSceneObjectId = null;
 let isDraggingSceneObject = false;
 const SNAP_THRESHOLD = 0.03; // 3% of image bounds
 let snapGuideX = null;
