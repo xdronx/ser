@@ -27,12 +27,14 @@ let furnitureItems = [];
 let selectedCategory = "all";
 let searchQuery = "";
 
-// Single active object on the scene (can be moved and resized)
-let sceneObject = null; // { furnitureId, x, y, scale }
+// Single active object on the scene (can be moved, resized, rotated)
+let sceneObject = null; // { furnitureId, x, y, scale, rotation }
 let sceneObjectEl = null;
 let sceneObjectImg = null;
 let sceneScaleLabel = null;
+let sceneRotationLabel = null;
 let isDraggingSceneObject = false;
+const SNAP_THRESHOLD = 0.03; // 3% of image bounds
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -264,6 +266,46 @@ function eventToNormalized(clientX, clientY, clampOutside = false) {
   };
 }
 
+function getSceneObjectHalfSizeNormalized() {
+  if (!sceneObject) return { halfW: 0, halfH: 0 };
+  const drawRect = getImageDrawRect(roomPreview);
+  if (!drawRect) return { halfW: 0, halfH: 0 };
+  const baseW = drawRect.drawW * 0.28;
+  const widthPx = Math.max(40, Math.round(baseW * sceneObject.scale));
+  const item = getFurnitureById(sceneObject.furnitureId);
+  let ratio = 1;
+  if (item) {
+    // use a reasonable ratio until image natural size is available
+    ratio = sceneObjectImg?.naturalWidth && sceneObjectImg?.naturalHeight
+      ? sceneObjectImg.naturalHeight / sceneObjectImg.naturalWidth
+      : 1.2;
+  }
+  const heightPx = widthPx * ratio;
+  return {
+    halfW: (widthPx / 2) / drawRect.drawW,
+    halfH: heightPx / drawRect.drawH, // anchored by bottom
+  };
+}
+
+function applySceneBoundsAndSnap() {
+  if (!sceneObject) return;
+  const { halfW, halfH } = getSceneObjectHalfSizeNormalized();
+
+  // Keep object fully inside visible room image bounds.
+  sceneObject.x = clamp(sceneObject.x, halfW, 1 - halfW);
+  sceneObject.y = clamp(sceneObject.y, halfH, 1);
+
+  // Snap to nearest wall/floor for realistic placement.
+  if (sceneObject.x - halfW <= SNAP_THRESHOLD) {
+    sceneObject.x = halfW;
+  } else if (1 - (sceneObject.x + halfW) <= SNAP_THRESHOLD) {
+    sceneObject.x = 1 - halfW;
+  }
+  if (1 - sceneObject.y <= SNAP_THRESHOLD) {
+    sceneObject.y = 1;
+  }
+}
+
 function ensureSceneObjectElement() {
   if (sceneObjectEl) return;
 
@@ -292,6 +334,10 @@ function ensureSceneObjectElement() {
   sceneScaleLabel.className = "scene-scale-label";
   sceneScaleLabel.textContent = "100%";
 
+  sceneRotationLabel = document.createElement("span");
+  sceneRotationLabel.className = "scene-rotation-label";
+  sceneRotationLabel.textContent = "0°";
+
   const plus = document.createElement("button");
   plus.type = "button";
   plus.textContent = "+";
@@ -301,9 +347,30 @@ function ensureSceneObjectElement() {
     adjustSceneScale(0.1);
   });
 
+  const rotateLeft = document.createElement("button");
+  rotateLeft.type = "button";
+  rotateLeft.textContent = "⟲";
+  rotateLeft.title = "Повернуть влево";
+  rotateLeft.addEventListener("click", (event) => {
+    event.stopPropagation();
+    adjustSceneRotation(-5);
+  });
+
+  const rotateRight = document.createElement("button");
+  rotateRight.type = "button";
+  rotateRight.textContent = "⟳";
+  rotateRight.title = "Повернуть вправо";
+  rotateRight.addEventListener("click", (event) => {
+    event.stopPropagation();
+    adjustSceneRotation(5);
+  });
+
   controls.appendChild(minus);
   controls.appendChild(sceneScaleLabel);
   controls.appendChild(plus);
+  controls.appendChild(rotateLeft);
+  controls.appendChild(sceneRotationLabel);
+  controls.appendChild(rotateRight);
   sceneObjectEl.appendChild(controls);
 
   sceneObjectEl.addEventListener("pointerdown", (event) => {
@@ -319,6 +386,7 @@ function ensureSceneObjectElement() {
     if (!point) return;
     sceneObject.x = point.x;
     sceneObject.y = point.y;
+    applySceneBoundsAndSnap();
     renderSceneObject();
     resetResult();
     setStatus("Предмет перемещён");
@@ -338,6 +406,11 @@ function ensureSceneObjectElement() {
   });
   sceneObjectEl.addEventListener("wheel", (event) => {
     event.preventDefault();
+    if (event.shiftKey) {
+      const rot = event.deltaY > 0 ? -5 : 5;
+      adjustSceneRotation(rot);
+      return;
+    }
     const delta = event.deltaY > 0 ? -0.05 : 0.05;
     adjustSceneScale(delta);
   });
@@ -351,9 +424,10 @@ function removeSceneObjectElement() {
   sceneObjectEl = null;
   sceneObjectImg = null;
   sceneScaleLabel = null;
+  sceneRotationLabel = null;
 }
 
-function placeSceneObject(furnitureId, x, y, scale = 1) {
+function placeSceneObject(furnitureId, x, y, scale = 1, rotation = 0) {
   const item = getFurnitureById(furnitureId);
   if (!item) return;
   sceneObject = {
@@ -361,7 +435,9 @@ function placeSceneObject(furnitureId, x, y, scale = 1) {
     x: clamp(x, 0, 1),
     y: clamp(y, 0, 1),
     scale: clamp(scale, 0.5, 2),
+    rotation: clamp(rotation, -180, 180),
   };
+  applySceneBoundsAndSnap();
   selectedFurnitureId = furnitureId;
   renderFurnitureGrid();
   renderSceneObject();
@@ -388,22 +464,40 @@ function renderSceneObject() {
 
   const baseW = drawRect.drawW * 0.28;
   const width = Math.max(40, Math.round(baseW * sceneObject.scale));
+  applySceneBoundsAndSnap();
   sceneObjectEl.style.width = `${width}px`;
   sceneObjectEl.style.left = `${drawRect.left + sceneObject.x * drawRect.drawW}px`;
   sceneObjectEl.style.top = `${drawRect.top + sceneObject.y * drawRect.drawH}px`;
+  sceneObjectEl.style.transform = `translate(-50%, -100%) rotate(${sceneObject.rotation || 0}deg)`;
 
   sceneObjectImg.src = item.asset_url || "";
   sceneObjectImg.alt = item.name || "Furniture";
   sceneScaleLabel.textContent = `${Math.round(sceneObject.scale * 100)}%`;
+  if (sceneRotationLabel) {
+    sceneRotationLabel.textContent = `${Math.round(sceneObject.rotation || 0)}°`;
+  }
 }
 
 function adjustSceneScale(delta) {
   if (!sceneObject) return;
   const next = clamp(sceneObject.scale + delta, 0.5, 2);
   sceneObject.scale = next;
+  applySceneBoundsAndSnap();
   renderSceneObject();
   resetResult();
   setStatus(`Масштаб: ${Math.round(sceneObject.scale * 100)}% (мин. 50%)`);
+}
+
+function adjustSceneRotation(deltaDeg) {
+  if (!sceneObject) return;
+  const raw = (sceneObject.rotation || 0) + deltaDeg;
+  let normalized = raw % 360;
+  if (normalized > 180) normalized -= 360;
+  if (normalized < -180) normalized += 360;
+  sceneObject.rotation = normalized;
+  renderSceneObject();
+  resetResult();
+  setStatus(`Поворот: ${Math.round(sceneObject.rotation)}°`);
 }
 
 function handleCanvasClick(event) {
@@ -415,7 +509,13 @@ function handleCanvasClick(event) {
 
   const point = eventToNormalized(event.clientX, event.clientY, false);
   if (!point) return;
-  placeSceneObject(selectedFurnitureId, point.x, point.y, sceneObject?.scale || 1);
+  placeSceneObject(
+    selectedFurnitureId,
+    point.x,
+    point.y,
+    sceneObject?.scale || 1,
+    sceneObject?.rotation || 0
+  );
 }
 
 async function handleRender() {
@@ -430,6 +530,7 @@ async function handleRender() {
   formData.append("x", sceneObject.x.toString());
   formData.append("y", sceneObject.y.toString());
   formData.append("scale", sceneObject.scale.toString());
+  formData.append("rotation_deg", (sceneObject.rotation || 0).toString());
 
   try {
     const response = await fetch("/api/render", {
@@ -531,7 +632,13 @@ function handleCanvasDrop(event) {
   if (!furnitureId) return;
 
   const point = eventToNormalized(event.clientX, event.clientY, true) || { x: 0.5, y: 0.82 };
-  placeSceneObject(furnitureId, point.x, point.y, sceneObject?.scale || 1);
+  placeSceneObject(
+    furnitureId,
+    point.x,
+    point.y,
+    sceneObject?.scale || 1,
+    sceneObject?.rotation || 0
+  );
 }
 
 roomImageInput.addEventListener("change", handleRoomFileChange);

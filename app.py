@@ -221,6 +221,7 @@ def _compose_room_with_furniture(
     y: float,
     add_shadow: bool = True,
     scale: float = 1.0,
+    rotation_deg: float = 0.0,
 ) -> tuple[Image.Image, dict]:
     image_rgba = Image.open(room_path).convert("RGBA")
     width, height = image_rgba.size
@@ -230,6 +231,7 @@ def _compose_room_with_furniture(
     asset_file = FURNITURE_DIR / furniture.get("asset_file", "")
     metadata: dict = {"anchor_point": (px, py), "furniture_box": None, "shadow_box": None}
     scale = max(0.5, min(2.0, float(scale)))
+    rotation_deg = max(-180.0, min(180.0, float(rotation_deg)))
     if asset_file.exists():
         processed_asset = get_processed_furniture_asset(asset_file)
         overlay = Image.open(processed_asset).convert("RGBA")
@@ -239,6 +241,11 @@ def _compose_room_with_furniture(
         ratio = target_w / ow
         target_h = max(40, int(oh * ratio))
         overlay = overlay.resize((target_w, target_h), Image.Resampling.LANCZOS)
+        if abs(rotation_deg) > 0.05:
+            overlay = overlay.rotate(
+                -rotation_deg, resample=Image.Resampling.BICUBIC, expand=True
+            )
+            target_w, target_h = overlay.size
 
         if add_shadow:
             alpha = overlay.getchannel("A")
@@ -300,9 +307,17 @@ def _build_openai_mask(size: tuple[int, int], boxes: list[tuple[int, int, int, i
     return mask
 
 
-def draw_mock_result(room_path: Path, furniture: dict, x: float, y: float, scale: float) -> str:
+def draw_mock_result(
+    room_path: Path, furniture: dict, x: float, y: float, scale: float, rotation_deg: float
+) -> str:
     image, metadata = _compose_room_with_furniture(
-        room_path, furniture, x, y, add_shadow=True, scale=scale
+        room_path,
+        furniture,
+        x,
+        y,
+        add_shadow=True,
+        scale=scale,
+        rotation_deg=rotation_deg,
     )
     width, height = image.size
     px, py = metadata["anchor_point"]
@@ -329,13 +344,24 @@ def draw_mock_result(room_path: Path, furniture: dict, x: float, y: float, scale
 
 
 def call_openai_image_edit(
-    room_path: Path, furniture: dict, x: float, y: float, scale: float
+    room_path: Path,
+    furniture: dict,
+    x: float,
+    y: float,
+    scale: float,
+    rotation_deg: float,
 ) -> str:
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY is empty. Add it to .env for openai mode.")
 
     image, metadata = _compose_room_with_furniture(
-        room_path, furniture, x, y, add_shadow=True, scale=scale
+        room_path,
+        furniture,
+        x,
+        y,
+        add_shadow=True,
+        scale=scale,
+        rotation_deg=rotation_deg,
     )
     width, height = image.size
     boxes: list[tuple[int, int, int, int]] = []
@@ -368,6 +394,7 @@ def call_openai_image_edit(
     furniture_prompt = (furniture.get("prompt") or "").strip()
     if furniture_prompt:
         prompt_parts.append(f"Furniture details: {furniture_prompt}")
+    prompt_parts.append(f"Requested furniture rotation angle: {rotation_deg:.1f} degrees.")
     prompt_parts.append("Do not move furniture position. Keep room geometry unchanged.")
     prompt = " ".join(part for part in prompt_parts if part)
 
@@ -459,7 +486,12 @@ def call_openai_image_edit(
 
 
 def call_external_webhook(
-    room_path: Path, furniture: dict, x: float, y: float, scale: float
+    room_path: Path,
+    furniture: dict,
+    x: float,
+    y: float,
+    scale: float,
+    rotation_deg: float,
 ) -> str:
     if not EXTERNAL_AI_WEBHOOK_URL:
         raise ValueError(
@@ -473,7 +505,7 @@ def call_external_webhook(
     payload = {
         "furniture_id": furniture["id"],
         "furniture_name": furniture["name"],
-        "placement": {"x": x, "y": y, "scale": scale},
+        "placement": {"x": x, "y": y, "scale": scale, "rotation_deg": rotation_deg},
         "room_image_base64": base64.b64encode(room_bytes).decode("utf-8"),
         "furniture_asset_base64": base64.b64encode(furniture_bytes).decode("utf-8"),
         "furniture_prompt": furniture.get("prompt", ""),
@@ -580,6 +612,7 @@ def api_render():
     x_raw = (request.form.get("x") or "").strip()
     y_raw = (request.form.get("y") or "").strip()
     scale_raw = (request.form.get("scale") or "1").strip()
+    rotation_raw = (request.form.get("rotation_deg") or "0").strip()
 
     if not room_file or not room_file.filename:
         return jsonify({"error": "room_image file is required"}), 400
@@ -596,13 +629,16 @@ def api_render():
         x = float(x_raw)
         y = float(y_raw)
         scale = float(scale_raw)
+        rotation_deg = float(rotation_raw)
     except ValueError:
-        return jsonify({"error": "x, y and scale must be numbers"}), 400
+        return jsonify({"error": "x, y, scale and rotation_deg must be numbers"}), 400
 
     if x < 0 or x > 1 or y < 0 or y > 1:
         return jsonify({"error": "x and y must be in range 0..1"}), 400
     if scale < 0.5 or scale > 2.0:
         return jsonify({"error": "scale must be in range 0.5..2.0"}), 400
+    if rotation_deg < -180 or rotation_deg > 180:
+        return jsonify({"error": "rotation_deg must be in range -180..180"}), 400
 
     room_ext = Path(room_file.filename).suffix.lower()
     upload_name = f"{uuid.uuid4().hex}{room_ext}"
@@ -611,11 +647,17 @@ def api_render():
 
     try:
         if GENERATION_PROVIDER == "webhook":
-            output_name = call_external_webhook(upload_path, furniture, x, y, scale)
+            output_name = call_external_webhook(
+                upload_path, furniture, x, y, scale, rotation_deg
+            )
         elif GENERATION_PROVIDER == "openai":
-            output_name = call_openai_image_edit(upload_path, furniture, x, y, scale)
+            output_name = call_openai_image_edit(
+                upload_path, furniture, x, y, scale, rotation_deg
+            )
         else:
-            output_name = draw_mock_result(upload_path, furniture, x, y, scale)
+            output_name = draw_mock_result(
+                upload_path, furniture, x, y, scale, rotation_deg
+            )
     except Exception as exc:
         return jsonify({"error": f"Generation failed: {exc}"}), 500
 
