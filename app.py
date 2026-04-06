@@ -33,6 +33,7 @@ OPENAI_BASE_URL = (
     or "https://api.openai.com/v1"
 )
 OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1").strip()
+OPENAI_FALLBACK_MODEL = os.getenv("OPENAI_FALLBACK_MODEL", "dall-e-2").strip()
 OPENAI_IMAGE_SIZE = os.getenv("OPENAI_IMAGE_SIZE", "").strip()
 OPENAI_IMAGE_QUALITY = os.getenv("OPENAI_IMAGE_QUALITY", "").strip()
 OPENAI_REFINE_PROMPT = os.getenv(
@@ -250,36 +251,65 @@ def call_openai_image_edit(room_path: Path, furniture: dict, x: float, y: float)
 
     endpoint = f"{OPENAI_BASE_URL.rstrip('/')}/images/edits"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-    data = {
-        "model": OPENAI_IMAGE_MODEL or "gpt-image-1",
-        "prompt": prompt,
-        "response_format": "b64_json",
-        "n": "1",
-    }
-    if OPENAI_IMAGE_SIZE:
-        data["size"] = OPENAI_IMAGE_SIZE
-    if OPENAI_IMAGE_QUALITY:
-        data["quality"] = OPENAI_IMAGE_QUALITY
-
     files = {
         "image": ("composite.png", image_bytes.getvalue(), "image/png"),
         "mask": ("mask.png", mask_bytes.getvalue(), "image/png"),
     }
-    response = requests.post(
-        endpoint,
-        headers=headers,
-        data=data,
-        files=files,
-        timeout=OPENAI_TIMEOUT_SEC,
-    )
+
+    def _request_with_model(model_name: str) -> tuple[requests.Response, str]:
+        data = {
+            "model": model_name,
+            "prompt": prompt,
+            "response_format": "b64_json",
+            "n": "1",
+        }
+        if OPENAI_IMAGE_SIZE:
+            data["size"] = OPENAI_IMAGE_SIZE
+        if OPENAI_IMAGE_QUALITY and model_name != "dall-e-2":
+            # The quality parameter is for GPT Image models.
+            data["quality"] = OPENAI_IMAGE_QUALITY
+        response = requests.post(
+            endpoint,
+            headers=headers,
+            data=data,
+            files=files,
+            timeout=OPENAI_TIMEOUT_SEC,
+        )
+        return response, model_name
+
+    primary_model = OPENAI_IMAGE_MODEL or "gpt-image-1"
+    response, used_model = _request_with_model(primary_model)
 
     if response.status_code >= 400:
         try:
             err = response.json()
-            message = err.get("error", {}).get("message") or err
+            message = str(err.get("error", {}).get("message") or err)
         except Exception:
             message = response.text
-        raise ValueError(f"OpenAI image edit failed: {message}")
+
+        can_fallback = (
+            OPENAI_FALLBACK_MODEL
+            and OPENAI_FALLBACK_MODEL != used_model
+            and (
+                "must be 'dall-e-2'" in message.lower()
+                or "does not have access" in message.lower()
+                or "model_not_found" in message.lower()
+            )
+        )
+        if not can_fallback:
+            raise ValueError(f"OpenAI image edit failed: {message}")
+
+        response, used_model = _request_with_model(OPENAI_FALLBACK_MODEL)
+        if response.status_code >= 400:
+            try:
+                err2 = response.json()
+                message2 = str(err2.get("error", {}).get("message") or err2)
+            except Exception:
+                message2 = response.text
+            raise ValueError(
+                f"OpenAI image edit failed on '{primary_model}' and fallback "
+                f"'{OPENAI_FALLBACK_MODEL}': {message2}"
+            )
 
     content_type = (response.headers.get("content-type") or "").lower()
     if "application/json" in content_type:

@@ -198,6 +198,7 @@ GENERATION_PROVIDER=openai
 OPENAI_API_KEY=твой_ключ
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_IMAGE_MODEL=gpt-image-1
+OPENAI_FALLBACK_MODEL=dall-e-2
 OPENAI_IMAGE_SIZE=
 OPENAI_IMAGE_QUALITY=
 OPENAI_TIMEOUT_SEC=120
@@ -213,6 +214,9 @@ python3 app.py
 4. Открой `http://127.0.0.1:5000/api/health` и проверь, что:
 - `"provider": "openai"`
 - `"openai_configured": true`
+
+Если аккаунт не имеет доступа к `gpt-image-1`, приложение автоматически
+попробует fallback-модель `dall-e-2` (настраивается через `OPENAI_FALLBACK_MODEL`).
 
 ### Как это работает внутри
 
