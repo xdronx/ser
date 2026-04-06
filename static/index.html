@@ -3,76 +3,83 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MVP: мебель в комнате</title>
+    <title>МебельВставка</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="container">
-      <h1>MVP: поставь мебель в свою комнату</h1>
-      <p class="lead">
-        1) Загрузи фото комнаты. 2) Выбери мебель. 3) Кликни место на фото.
-        4) Нажми "Сгенерировать".
-      </p>
-
-      <section class="panel">
-        <label class="field">
-          <span>Фото комнаты</span>
-          <input id="roomImageInput" type="file" accept=".jpg,.jpeg,.png,.webp" />
-        </label>
-
-        <label class="field">
-          <span>Мебель</span>
-          <select id="furnitureSelect"></select>
-        </label>
-
-        <div class="actions">
-          <button id="renderBtn" disabled>Сгенерировать</button>
-          <span id="statusText">Подготовка...</span>
+    <div class="app-shell">
+      <aside class="rail">
+        <div class="brand">
+          <div class="brand-icon">F</div>
+          <div class="brand-name">Мебель</div>
         </div>
-      </section>
 
-      <section class="panel upload-panel">
-        <label class="field">
-          <span>Название нового предмета</span>
-          <input id="newFurnitureName" type="text" placeholder="Например: Стул 2" />
-        </label>
+        <nav class="rail-nav">
+          <button type="button" class="rail-btn active">Мебель</button>
+          <button type="button" class="rail-btn">Стили</button>
+          <button type="button" class="rail-btn">Сцены</button>
+          <button type="button" class="rail-btn">Фото</button>
+        </nav>
 
-        <label class="field">
-          <span>Категория (chair/table/...)</span>
-          <input id="newFurnitureCategory" type="text" placeholder="chair" value="chair" />
-        </label>
+        <div class="rail-help">Помощь</div>
+      </aside>
 
-        <label class="field">
-          <span>PNG/JPG предмета</span>
-          <input id="newFurnitureImage" type="file" accept=".png,.jpg,.jpeg,.webp" />
-        </label>
+      <section class="catalog">
+        <header class="catalog-head">
+          <h2>Мебель</h2>
+          <p class="catalog-sub">Выбери предмет и поставь его в комнату</p>
+        </header>
 
-        <div class="actions">
-          <button id="uploadFurnitureBtn">Добавить предмет</button>
-          <span id="uploadStatusText">Можно добавить свою мебель</span>
+        <div class="catalog-search">
+          <input id="searchInput" type="search" placeholder="Поиск мебели..." />
         </div>
-      </section>
 
-      <section class="grid">
-        <article class="card">
-          <h2>Фото комнаты</h2>
-          <p class="hint">Кликни по фото, чтобы выбрать точку установки мебели.</p>
-          <div id="roomPreviewWrap" class="preview-wrap">
-            <img id="roomPreview" alt="Предпросмотр комнаты" />
-            <div id="marker" class="marker" hidden></div>
+        <div id="categoryTabs" class="chips"></div>
+
+        <div id="furnitureGrid" class="furniture-grid"></div>
+
+        <footer class="catalog-footer">
+          <div class="catalog-upload">
+            <input id="newFurnitureName" type="text" placeholder="Название (например: Стул 2)" />
+            <input id="newFurnitureCategory" type="text" placeholder="Категория: chair/table" value="chair" />
+            <input id="newFurnitureImage" type="file" accept=".png,.jpg,.jpeg,.webp" />
+            <button id="uploadFurnitureBtn" type="button">Добавить предмет</button>
+            <p id="uploadStatusText">Можно добавить свои реальные предметы.</p>
           </div>
-          <p id="coordsText" class="coords">Точка не выбрана</p>
-        </article>
+        </footer>
+      </section>
 
-        <article class="card">
-          <h2>Результат</h2>
-          <div class="preview-wrap result-wrap">
+      <section class="workspace">
+        <header class="toolbar">
+          <div class="toolbar-left">
+            <label class="ghost-btn upload-room">
+              <input id="roomImageInput" type="file" accept=".jpg,.jpeg,.png,.webp" />
+              <span>Загрузить фото</span>
+            </label>
+            <button id="clearBtn" class="ghost-btn" type="button">Очистить</button>
+          </div>
+
+          <div class="toolbar-right">
+            <a id="downloadLink" href="#" download hidden>Скачать</a>
+            <button id="renderBtn" class="primary-btn" type="button" disabled>Сгенерировать</button>
+          </div>
+        </header>
+
+        <div class="canvas-wrap">
+          <div class="canvas-surface">
+            <img id="roomPreview" alt="Комната" />
             <img id="resultImage" alt="Результат генерации" />
+            <div id="marker" class="marker" hidden></div>
+            <div id="emptyHint" class="hint-empty">Загрузи фото комнаты, чтобы начать</div>
           </div>
-          <a id="downloadLink" href="#" download hidden>Скачать результат</a>
-        </article>
+        </div>
+
+        <footer class="bottom-status">
+          <p id="statusText">Подготовка...</p>
+          <p id="coordsText">Точка не выбрана</p>
+        </footer>
       </section>
-    </main>
+    </div>
 
     <script src="/app.js"></script>
   </body>

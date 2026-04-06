@@ -105,6 +105,13 @@ def get_furniture_item(furniture_id: str) -> dict | None:
     return None
 
 
+def serialize_furniture_item(item: dict) -> dict:
+    data = dict(item)
+    asset_file = (item.get("asset_file") or "").strip()
+    data["asset_url"] = f"/assets/furniture/{asset_file}" if asset_file else ""
+    return data
+
+
 def allowed_image(filename: str) -> bool:
     ext = Path(filename).suffix.lower()
     return ext in {".jpg", ".jpeg", ".png", ".webp"}
@@ -496,7 +503,8 @@ def index():
 
 @app.route("/api/furniture", methods=["GET"])
 def api_furniture():
-    return jsonify({"items": load_catalog()})
+    items = [serialize_furniture_item(item) for item in load_catalog()]
+    return jsonify({"items": items})
 
 
 @app.route("/api/furniture/upload", methods=["POST"])
@@ -603,6 +611,11 @@ def api_render():
 @app.route("/generated/<path:filename>")
 def generated_file(filename: str):
     return send_from_directory(GENERATED_DIR, filename)
+
+
+@app.route("/assets/furniture/<path:filename>")
+def furniture_asset_file(filename: str):
+    return send_from_directory(FURNITURE_DIR, filename)
 
 
 if __name__ == "__main__":
