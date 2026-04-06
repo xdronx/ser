@@ -60,6 +60,9 @@ let isRemoveMode = false;
 let isSelectingRemoveArea = false;
 let removeSelection = null; // normalized selection {x1,y1,x2,y2}
 let removeSelectionStart = null;
+let layerDragSourceId = null;
+let layerDropTargetId = null;
+let layerDropBefore = true;
 
 const ratioCache = new Map();
 
@@ -405,6 +408,91 @@ function sortByLayerAsc(items) {
   return [...items].sort((a, b) => a.layerOrder - b.layerOrder);
 }
 
+function updateLayerDropHint() {
+  const rows = layersList.querySelectorAll(".layer-item");
+  rows.forEach((row) => {
+    row.classList.remove("dragging", "drop-before", "drop-after");
+    if (row.dataset.layerId === layerDragSourceId) {
+      row.classList.add("dragging");
+    }
+  });
+  if (!layerDragSourceId || !layerDropTargetId || layerDropTargetId === layerDragSourceId) {
+    return;
+  }
+  rows.forEach((row) => {
+    if (row.dataset.layerId === layerDropTargetId) {
+      row.classList.add(layerDropBefore ? "drop-before" : "drop-after");
+    }
+  });
+}
+
+function setLayerDropTarget(layerId, before) {
+  layerDropTargetId = layerId || null;
+  layerDropBefore = Boolean(before);
+  updateLayerDropHint();
+}
+
+function clearLayerDragState() {
+  layerDragSourceId = null;
+  layerDropTargetId = null;
+  layerDropBefore = true;
+  updateLayerDropHint();
+}
+
+function handleLayersListDrop(event) {
+  if (!layerDragSourceId) return;
+  event.preventDefault();
+  if (!sceneObjects.length) return;
+  const targetRow = event.target.closest(".layer-item");
+  if (!targetRow) {
+    const changed = reorderLayerByDrag(layerDragSourceId, sceneObjects[0].id, false);
+    clearLayerDragState();
+    if (changed) {
+      resetResult();
+      renderSceneObjects();
+      setStatus("Порядок слоёв обновлён");
+    }
+    renderLayersPanel();
+    return;
+  }
+  const targetId = targetRow.dataset.layerId;
+  const rect = targetRow.getBoundingClientRect();
+  const before = event.clientY < rect.top + rect.height / 2;
+  const changed = reorderLayerByDrag(layerDragSourceId, targetId, before);
+  clearLayerDragState();
+  if (changed) {
+    resetResult();
+    renderSceneObjects();
+    setStatus("Порядок слоёв обновлён");
+  }
+  renderLayersPanel();
+}
+
+function reorderLayerByDrag(draggedId, targetId, before) {
+  if (!draggedId || !targetId || draggedId === targetId) return false;
+  const topDown = sortByLayerAsc(sceneObjects).reverse();
+  const fromIndex = topDown.findIndex((obj) => obj.id === draggedId);
+  const targetIndex = topDown.findIndex((obj) => obj.id === targetId);
+  if (fromIndex < 0 || targetIndex < 0) return false;
+
+  let insertIndex = targetIndex + (before ? 0 : 1);
+  if (fromIndex < insertIndex) {
+    insertIndex -= 1;
+  }
+  if (insertIndex === fromIndex) return false;
+
+  const [moved] = topDown.splice(fromIndex, 1);
+  topDown.splice(clamp(insertIndex, 0, topDown.length), 0, moved);
+
+  const asc = [...topDown].reverse();
+  for (let i = 0; i < asc.length; i += 1) {
+    asc[i].layerOrder = i;
+  }
+  sceneObjects = asc;
+  manualLayerOrdering = true;
+  return true;
+}
+
 function normalizeLayerOrders() {
   const ordered = sortByLayerAsc(sceneObjects);
   for (let i = 0; i < ordered.length; i += 1) {
@@ -543,6 +631,7 @@ function renderLayersPanel() {
   if (!sceneObjects.length) {
     layersEmpty.hidden = false;
     layersList.innerHTML = "";
+    clearLayerDragState();
     return;
   }
   layersEmpty.hidden = true;
@@ -557,7 +646,51 @@ function renderLayersPanel() {
 
     const row = document.createElement("div");
     row.className = `layer-item ${obj.id === activeSceneObjectId ? "active" : ""}`;
+    row.dataset.layerId = obj.id;
+    row.setAttribute("draggable", "true");
     row.addEventListener("click", () => setActiveSceneObject(obj.id));
+    row.addEventListener("dragstart", (event) => {
+      if (isRendering) {
+        event.preventDefault();
+        return;
+      }
+      layerDragSourceId = obj.id;
+      setLayerDropTarget(obj.id, true);
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/layer-id", obj.id);
+      }
+      updateLayerDropHint();
+    });
+    row.addEventListener("dragover", (event) => {
+      if (!layerDragSourceId) return;
+      event.preventDefault();
+      const rect = row.getBoundingClientRect();
+      const before = event.clientY < rect.top + rect.height / 2;
+      setLayerDropTarget(obj.id, before);
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+    });
+    row.addEventListener("drop", (event) => {
+      if (!layerDragSourceId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = row.getBoundingClientRect();
+      const before = event.clientY < rect.top + rect.height / 2;
+      const changed = reorderLayerByDrag(layerDragSourceId, obj.id, before);
+      clearLayerDragState();
+      if (changed) {
+        resetResult();
+        renderSceneObjects();
+        setStatus("Порядок слоёв обновлён");
+      }
+      renderLayersPanel();
+    });
+    row.addEventListener("dragend", () => {
+      clearLayerDragState();
+      renderLayersPanel();
+    });
 
     const main = document.createElement("div");
     main.className = "layer-main";
@@ -602,6 +735,7 @@ function renderLayersPanel() {
     row.appendChild(actions);
     layersList.appendChild(row);
   }
+  updateLayerDropHint();
 }
 
 function moveLayer(sceneObjectId, delta) {
@@ -1225,6 +1359,28 @@ canvasSurface.addEventListener("dragleave", () => {
   canvasSurface.classList.remove("drop-active");
 });
 canvasSurface.addEventListener("drop", handleCanvasDrop);
+layersList.addEventListener("dragover", (event) => {
+  if (!layerDragSourceId) return;
+  event.preventDefault();
+  const lastRow = layersList.lastElementChild;
+  if (!(lastRow instanceof HTMLElement)) return;
+  setLayerDropTarget(lastRow.dataset.layerId, false);
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+});
+layersList.addEventListener("drop", (event) => {
+  if (!layerDragSourceId || !layerDropTargetId) return;
+  event.preventDefault();
+  const changed = reorderLayerByDrag(layerDragSourceId, layerDropTargetId, layerDropBefore);
+  clearLayerDragState();
+  if (changed) {
+    resetResult();
+    renderSceneObjects();
+    setStatus("Порядок слоёв обновлён");
+  }
+  renderLayersPanel();
+});
 
 renderBtn.addEventListener("click", handleRender);
 clearBtn.addEventListener("click", handleClear);

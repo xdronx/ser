@@ -623,11 +623,26 @@ body {
   background: #fff;
   padding: 8px 8px 8px 10px;
   cursor: pointer;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, opacity 0.14s ease;
 }
 
 .layer-item.active {
   border-color: #93c5fd;
   box-shadow: 0 0 0 1px #93c5fd inset;
+}
+
+.layer-item.dragging {
+  opacity: 0.45;
+}
+
+.layer-item.drop-before {
+  border-top: 2px solid #3b82f6;
+  box-shadow: 0 -1px 0 0 #3b82f6 inset;
+}
+
+.layer-item.drop-after {
+  border-bottom: 2px solid #3b82f6;
+  box-shadow: 0 1px 0 0 #3b82f6 inset;
 }
 
 .layer-main {
