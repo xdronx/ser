@@ -65,16 +65,27 @@
           </div>
         </header>
 
-        <div class="canvas-wrap">
-          <div class="canvas-surface">
-            <img id="roomPreview" alt="Комната" />
-            <img id="resultImage" alt="Результат генерации" />
-            <div id="marker" class="marker" hidden></div>
-            <div id="snapGuideV" class="snap-guide snap-guide-v" hidden></div>
-            <div id="snapGuideH" class="snap-guide snap-guide-h" hidden></div>
-            <div id="sceneObjectsLayer" class="scene-objects-layer"></div>
-            <div id="emptyHint" class="hint-empty">Загрузи фото комнаты, чтобы начать</div>
+        <div class="workspace-main">
+          <div class="canvas-wrap">
+            <div class="canvas-surface">
+              <img id="roomPreview" alt="Комната" />
+              <img id="resultImage" alt="Результат генерации" />
+              <div id="marker" class="marker" hidden></div>
+              <div id="snapGuideV" class="snap-guide snap-guide-v" hidden></div>
+              <div id="snapGuideH" class="snap-guide snap-guide-h" hidden></div>
+              <div id="sceneObjectsLayer" class="scene-objects-layer"></div>
+              <div id="emptyHint" class="hint-empty">Загрузи фото комнаты, чтобы начать</div>
+            </div>
           </div>
+
+          <aside class="layers-panel">
+            <header class="layers-head">
+              <h3>Слои</h3>
+              <p>Активный слой выделен. Меняй порядок вручную.</p>
+            </header>
+            <div id="layersEmpty" class="layers-empty">Добавь объекты на сцену</div>
+            <div id="layersList" class="layers-list"></div>
+          </aside>
         </div>
 
         <footer class="bottom-status">

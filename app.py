@@ -324,8 +324,11 @@ def _compose_room_with_scene(
     if not scene_objects:
         return image_rgba.convert("RGB"), []
 
-    # Farther objects (smaller y) should render first, closer objects render last on top.
-    ordered = sorted(scene_objects, key=lambda obj: float(obj.get("y", 0)))
+    # Respect explicit layer order from UI (bottom -> top). If equal, keep depth fallback by y.
+    ordered = sorted(
+        scene_objects,
+        key=lambda obj: (int(obj.get("layer_order", 0)), float(obj.get("y", 0))),
+    )
     metadata_list: list[dict] = []
     for obj in ordered:
         metadata = _paste_furniture_on_canvas(
@@ -554,6 +557,7 @@ def call_external_webhook(
                     "y": float(obj["y"]),
                     "scale": float(obj.get("scale", 1.0)),
                     "rotation_deg": float(obj.get("rotation_deg", 0.0)),
+                    "layer_order": int(obj.get("layer_order", 0)),
                 },
                 "furniture_asset_base64": base64.b64encode(furniture_bytes).decode("utf-8"),
                 "furniture_prompt": furniture.get("prompt", ""),
@@ -728,6 +732,7 @@ def api_render():
             y = float(raw_obj.get("y"))
             scale = float(raw_obj.get("scale", 1))
             rotation_deg = float(raw_obj.get("rotation_deg", raw_obj.get("rotation", 0)))
+            layer_order = int(raw_obj.get("layer_order", idx))
         except (TypeError, ValueError):
             return jsonify(
                 {
@@ -743,6 +748,10 @@ def api_render():
             return jsonify(
                 {"error": f"scene_objects[{idx}] rotation_deg must be in range -180..180"}
             ), 400
+        if layer_order < 0 or layer_order > 5:
+            return jsonify(
+                {"error": f"scene_objects[{idx}] layer_order must be in range 0..5"}
+            ), 400
 
         scene_objects.append(
             {
@@ -753,6 +762,7 @@ def api_render():
                 "y": y,
                 "scale": scale,
                 "rotation_deg": rotation_deg,
+                "layer_order": layer_order,
             }
         )
 
