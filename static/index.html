@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MVP: мебель в комнате</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>MVP: поставь мебель в свою комнату</h1>
+      <p class="lead">
+        1) Загрузи фото комнаты. 2) Выбери мебель. 3) Кликни место на фото.
+        4) Нажми "Сгенерировать".
+      </p>
+
+      <section class="panel">
+        <label class="field">
+          <span>Фото комнаты</span>
+          <input id="roomImageInput" type="file" accept=".jpg,.jpeg,.png,.webp" />
+        </label>
+
+        <label class="field">
+          <span>Мебель</span>
+          <select id="furnitureSelect"></select>
+        </label>
+
+        <div class="actions">
+          <button id="renderBtn" disabled>Сгенерировать</button>
+          <span id="statusText">Подготовка...</span>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h2>Фото комнаты</h2>
+          <p class="hint">Кликни по фото, чтобы выбрать точку установки мебели.</p>
+          <div id="roomPreviewWrap" class="preview-wrap">
+            <img id="roomPreview" alt="Предпросмотр комнаты" />
+            <div id="marker" class="marker" hidden></div>
+          </div>
+          <p id="coordsText" class="coords">Точка не выбрана</p>
+        </article>
+
+        <article class="card">
+          <h2>Результат</h2>
+          <div class="preview-wrap result-wrap">
+            <img id="resultImage" alt="Результат генерации" />
+          </div>
+          <a id="downloadLink" href="#" download hidden>Скачать результат</a>
+        </article>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
