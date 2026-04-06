@@ -349,6 +349,38 @@ body {
   outline-offset: -6px;
 }
 
+.snap-guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.snap-guide {
+  position: absolute;
+  display: none;
+}
+
+.snap-guide.active {
+  display: block;
+}
+
+.snap-guide.vertical {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0), rgba(59, 130, 246, 0.95), rgba(59, 130, 246, 0));
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
+.snap-guide.horizontal {
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0), rgba(59, 130, 246, 0.95), rgba(59, 130, 246, 0));
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
 #roomPreview:not([src]),
 #resultImage:not([src]) {
   display: none;

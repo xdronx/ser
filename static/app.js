@@ -35,6 +35,8 @@ let sceneScaleLabel = null;
 let sceneRotationLabel = null;
 let isDraggingSceneObject = false;
 const SNAP_THRESHOLD = 0.03; // 3% of image bounds
+let snapGuideX = null;
+let snapGuideY = null;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -62,6 +64,52 @@ function resetResult() {
   resultImage.removeAttribute("src");
   downloadLink.hidden = true;
   downloadLink.removeAttribute("href");
+}
+
+function ensureSnapGuides() {
+  if (!snapGuideX) {
+    snapGuideX = document.createElement("div");
+    snapGuideX.className = "snap-guide snap-guide-x";
+    snapGuideX.hidden = true;
+    canvasSurface.appendChild(snapGuideX);
+  }
+  if (!snapGuideY) {
+    snapGuideY = document.createElement("div");
+    snapGuideY.className = "snap-guide snap-guide-y";
+    snapGuideY.hidden = true;
+    canvasSurface.appendChild(snapGuideY);
+  }
+}
+
+function hideSnapGuides() {
+  ensureSnapGuides();
+  if (snapGuideX) snapGuideX.hidden = true;
+  if (snapGuideY) snapGuideY.hidden = true;
+}
+
+function updateSnapGuides(snapState, drawRect) {
+  ensureSnapGuides();
+  hideSnapGuides();
+  if (!drawRect || !snapState) return;
+
+  if (snapState.wall === "left" && snapGuideX) {
+    snapGuideX.hidden = false;
+    snapGuideX.style.left = `${drawRect.left}px`;
+    snapGuideX.style.top = `${drawRect.top}px`;
+    snapGuideX.style.height = `${drawRect.drawH}px`;
+  }
+  if (snapState.wall === "right" && snapGuideX) {
+    snapGuideX.hidden = false;
+    snapGuideX.style.left = `${drawRect.left + drawRect.drawW}px`;
+    snapGuideX.style.top = `${drawRect.top}px`;
+    snapGuideX.style.height = `${drawRect.drawH}px`;
+  }
+  if (snapState.floor && snapGuideY) {
+    snapGuideY.hidden = false;
+    snapGuideY.style.left = `${drawRect.left}px`;
+    snapGuideY.style.top = `${drawRect.top + drawRect.drawH}px`;
+    snapGuideY.style.width = `${drawRect.drawW}px`;
+  }
 }
 
 function normalizeCategory(value) {
@@ -288,8 +336,9 @@ function getSceneObjectHalfSizeNormalized() {
 }
 
 function applySceneBoundsAndSnap() {
-  if (!sceneObject) return;
+  if (!sceneObject) return { wall: null, floor: false };
   const { halfW, halfH } = getSceneObjectHalfSizeNormalized();
+  const snapState = { wall: null, floor: false };
 
   // Keep object fully inside visible room image bounds.
   sceneObject.x = clamp(sceneObject.x, halfW, 1 - halfW);
@@ -298,12 +347,16 @@ function applySceneBoundsAndSnap() {
   // Snap to nearest wall/floor for realistic placement.
   if (sceneObject.x - halfW <= SNAP_THRESHOLD) {
     sceneObject.x = halfW;
+    snapState.wall = "left";
   } else if (1 - (sceneObject.x + halfW) <= SNAP_THRESHOLD) {
     sceneObject.x = 1 - halfW;
+    snapState.wall = "right";
   }
   if (1 - sceneObject.y <= SNAP_THRESHOLD) {
     sceneObject.y = 1;
+    snapState.floor = true;
   }
+  return snapState;
 }
 
 function ensureSceneObjectElement() {
@@ -450,12 +503,14 @@ function placeSceneObject(furnitureId, x, y, scale = 1, rotation = 0) {
 function renderSceneObject() {
   if (!sceneObject || !selectedRoomFile) {
     removeSceneObjectElement();
+    hideSnapGuides();
     return;
   }
   const item = getFurnitureById(sceneObject.furnitureId);
   const drawRect = getImageDrawRect(roomPreview);
   if (!item || !drawRect) {
     removeSceneObjectElement();
+    hideSnapGuides();
     return;
   }
 
@@ -464,11 +519,12 @@ function renderSceneObject() {
 
   const baseW = drawRect.drawW * 0.28;
   const width = Math.max(40, Math.round(baseW * sceneObject.scale));
-  applySceneBoundsAndSnap();
+  const snapState = applySceneBoundsAndSnap();
   sceneObjectEl.style.width = `${width}px`;
   sceneObjectEl.style.left = `${drawRect.left + sceneObject.x * drawRect.drawW}px`;
   sceneObjectEl.style.top = `${drawRect.top + sceneObject.y * drawRect.drawH}px`;
   sceneObjectEl.style.transform = `translate(-50%, -100%) rotate(${sceneObject.rotation || 0}deg)`;
+  updateSnapGuides(snapState, drawRect);
 
   sceneObjectImg.src = item.asset_url || "";
   sceneObjectImg.alt = item.name || "Furniture";
@@ -608,6 +664,7 @@ function handleClear() {
   marker.hidden = true;
   coordsText.textContent = "Точка не выбрана";
   resetResult();
+  hideSnapGuides();
   updateEmptyHint();
   updateRenderButtonState();
   setStatus("Сцена очищена");
@@ -671,6 +728,7 @@ window.addEventListener("resize", () => {
 });
 
 updateEmptyHint();
+hideSnapGuides();
 loadFurnitureCatalog().catch((error) => {
   console.error(error);
   setStatus(error.message, true);
