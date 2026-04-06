@@ -51,22 +51,40 @@ def allowed_image(filename: str) -> bool:
     return ext in {".jpg", ".jpeg", ".png", ".webp"}
 
 
-def draw_mock_result(room_path: Path, furniture_name: str, x: float, y: float) -> str:
+def draw_mock_result(room_path: Path, furniture: dict, x: float, y: float) -> str:
     image = Image.open(room_path).convert("RGB")
     width, height = image.size
     px = int(width * x)
     py = int(height * y)
 
     draw = ImageDraw.Draw(image)
-    radius = max(12, min(width, height) // 40)
-    draw.ellipse(
-        (px - radius, py - radius, px + radius, py + radius),
-        fill=(0, 170, 255),
-        outline=(255, 255, 255),
-        width=3,
-    )
+    asset_file = FURNITURE_DIR / furniture.get("asset_file", "")
+    if asset_file.exists():
+        overlay = Image.open(asset_file).convert("RGBA")
+        ow, oh = overlay.size
+        target_w = max(80, min(int(width * 0.28), int(width * 0.6)))
+        scale = target_w / ow
+        target_h = max(80, int(oh * scale))
+        overlay = overlay.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
-    label = f"{furniture_name}"
+        # Anchor the object by its bottom center to the clicked point.
+        x1 = px - target_w // 2
+        y1 = py - target_h
+        image_rgba = image.convert("RGBA")
+        image_rgba.paste(overlay, (x1, y1), overlay)
+        image = image_rgba.convert("RGB")
+        draw = ImageDraw.Draw(image)
+    else:
+        # Fallback marker if asset file is missing.
+        radius = max(12, min(width, height) // 40)
+        draw.ellipse(
+            (px - radius, py - radius, px + radius, py + radius),
+            fill=(0, 170, 255),
+            outline=(255, 255, 255),
+            width=3,
+        )
+
+    label = f"{furniture['name']}"
     font = ImageFont.load_default()
     try:
         left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
@@ -190,7 +208,7 @@ def api_render():
         if GENERATION_PROVIDER == "webhook":
             output_name = call_external_webhook(upload_path, furniture, x, y)
         else:
-            output_name = draw_mock_result(upload_path, furniture["name"], x, y)
+            output_name = draw_mock_result(upload_path, furniture, x, y)
     except Exception as exc:
         return jsonify({"error": f"Generation failed: {exc}"}), 500
 
