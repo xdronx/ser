@@ -108,6 +108,12 @@ let layerDropBefore = true;
 let beforeImageUrl = "";
 let afterImageUrl = "";
 let autosaveTimer = null;
+let autosaveInFlight = false;
+let lastAutoSavedSignature = "";
+let cachedAutoSaveRoomDataUrl = "";
+let cachedAutoSaveRoomSignature = "";
+let maskVersion = 0;
+let maskNeedsRecount = false;
 
 const ratioCache = new Map();
 const historyPast = [];
@@ -337,6 +343,8 @@ function updateCursorHintVisibility(visible) {
 }
 
 function resetResult() {
+  const hasResultImage = Boolean(resultImage.getAttribute("src"));
+  if (!hasResultImage && downloadLink.hidden && compareWrap.hidden && (!isRendering || renderProgressWrap.hidden)) return;
   resultImage.removeAttribute("src");
   downloadLink.hidden = true;
   downloadLink.removeAttribute("href");
@@ -444,6 +452,26 @@ function getCurrentProjectPayload(roomDataUrl = "") {
   };
 }
 
+function getRoomFileSignature(file) {
+  if (!file) return "";
+  return `${file.name}|${file.size}|${file.type}|${file.lastModified}`;
+}
+
+function getAutoSaveStateSignature(roomSignature) {
+  return JSON.stringify({
+    roomSignature,
+    sceneObjects,
+    activeSceneObjectId,
+    manualLayerOrdering,
+    selectedFurnitureId,
+    selectedCategory,
+    searchQuery,
+    removeModeTool,
+    maskDirty,
+    maskVersion,
+  });
+}
+
 async function compressRoomImageFile(file) {
   if (!file.type.startsWith("image/")) {
     throw new Error("Можно загрузить только изображение");
@@ -485,13 +513,23 @@ async function compressRoomImageFile(file) {
 }
 
 async function persistAutoSavedProject() {
-  if (!selectedRoomFile || isRendering) return;
+  if (!selectedRoomFile || isRendering || autosaveInFlight) return;
+  const roomSignature = getRoomFileSignature(selectedRoomFile);
+  const nextSignature = getAutoSaveStateSignature(roomSignature);
+  if (nextSignature === lastAutoSavedSignature) return;
+  autosaveInFlight = true;
   try {
-    const roomDataUrl = await fileToDataUrl(selectedRoomFile);
-    const payload = getCurrentProjectPayload(roomDataUrl);
+    if (!cachedAutoSaveRoomDataUrl || cachedAutoSaveRoomSignature !== roomSignature) {
+      cachedAutoSaveRoomDataUrl = await fileToDataUrl(selectedRoomFile);
+      cachedAutoSaveRoomSignature = roomSignature;
+    }
+    const payload = getCurrentProjectPayload(cachedAutoSaveRoomDataUrl);
     localStorage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(payload));
+    lastAutoSavedSignature = nextSignature;
   } catch (error) {
     console.warn("Autosave skipped:", error);
+  } finally {
+    autosaveInFlight = false;
   }
 }
 
@@ -1062,6 +1100,8 @@ function clearMaskCanvas() {
   if (!ctx) return;
   ctx.clearRect(0, 0, removeMaskCanvas.width, removeMaskCanvas.height);
   maskDirty = false;
+  maskNeedsRecount = false;
+  maskVersion += 1;
   updateRemoveButtonsState();
 }
 
@@ -1165,6 +1205,27 @@ function clearRemoveSelection() {
   updateRemoveButtonsState();
 }
 
+function recomputeMaskDirtyFromCanvas() {
+  const ctx = removeMaskCanvas.getContext("2d");
+  if (!ctx || removeMaskCanvas.width <= 0 || removeMaskCanvas.height <= 0) {
+    maskDirty = false;
+    return;
+  }
+  const sample = ctx.getImageData(0, 0, removeMaskCanvas.width, removeMaskCanvas.height).data;
+  let any = false;
+  for (let i = 3; i < sample.length; i += 4) {
+    if (sample[i] > 0) {
+      any = true;
+      break;
+    }
+  }
+  maskDirty = any;
+}
+
+function markStateDirty() {
+  lastAutoSavedSignature = "";
+}
+
 function paintMaskLine(from, to, erase = false) {
   const drawRect = getImageDrawRect(roomPreview);
   if (!drawRect) return;
@@ -1189,17 +1250,8 @@ function paintMaskLine(from, to, erase = false) {
   ctx.stroke();
   ctx.restore();
   if (!erase) maskDirty = true;
-  else {
-    const sample = ctx.getImageData(0, 0, removeMaskCanvas.width, removeMaskCanvas.height).data;
-    let any = false;
-    for (let i = 3; i < sample.length; i += 4) {
-      if (sample[i] > 0) {
-        any = true;
-        break;
-      }
-    }
-    maskDirty = any;
-  }
+  else maskNeedsRecount = true;
+  maskVersion += 1;
   updateRemoveButtonsState();
 }
 
@@ -1279,6 +1331,12 @@ function applyRoomFromBlob(blob, filename = "room.jpg") {
   if (selectedRoomUrl) URL.revokeObjectURL(selectedRoomUrl);
   selectedRoomUrl = URL.createObjectURL(blob);
   roomPreview.src = selectedRoomUrl;
+  const roomSignature = getRoomFileSignature(selectedRoomFile);
+  if (cachedAutoSaveRoomSignature !== roomSignature) {
+    cachedAutoSaveRoomDataUrl = "";
+    cachedAutoSaveRoomSignature = "";
+  }
+  markStateDirty();
   updateEmptyHint();
   updateCursorHintVisibility(false);
 }
@@ -1454,6 +1512,10 @@ function handleRemovePointerUp() {
   }
   isPaintingMask = false;
   lastMaskPoint = null;
+  if (removeModeTool === "eraser" && maskNeedsRecount) {
+    recomputeMaskDirtyFromCanvas();
+    maskNeedsRecount = false;
+  }
   updateRemoveButtonsState();
 }
 
