@@ -8,17 +8,22 @@ const statusText = document.getElementById("statusText");
 const renderBtn = document.getElementById("renderBtn");
 const clearBtn = document.getElementById("clearBtn");
 const downloadLink = document.getElementById("downloadLink");
+const workspace = document.querySelector(".workspace");
 const renderProgressWrap = document.getElementById("renderProgressWrap");
 const renderProgressBar = document.getElementById("renderProgressBar");
 const renderProgressPercent = document.getElementById("renderProgressPercent");
 const renderProgressLabel = document.getElementById("renderProgressLabel");
+const modeInsertBtn = document.getElementById("modeInsertBtn");
+const modeRemoveBtn = document.getElementById("modeRemoveBtn");
+const modePanelBadge = document.getElementById("modePanelBadge");
+const modePanelIcon = document.getElementById("modePanelIcon");
+const modePanelLabel = document.getElementById("modePanelLabel");
 
 const undoBtn = document.getElementById("undoBtn");
 const redoBtn = document.getElementById("redoBtn");
 const saveProjectBtn = document.getElementById("saveProjectBtn");
 const loadProjectInput = document.getElementById("loadProjectInput");
 
-const removeFurnitureBtn = document.getElementById("removeFurnitureBtn");
 const removeRectBtn = document.getElementById("removeRectBtn");
 const removeBrushBtn = document.getElementById("removeBrushBtn");
 const removeEraserBtn = document.getElementById("removeEraserBtn");
@@ -37,6 +42,8 @@ const compareAfterClip = document.getElementById("compareAfterClip");
 const compareDivider = document.getElementById("compareDivider");
 const compareSlider = document.getElementById("compareSlider");
 const comparePercentText = document.getElementById("comparePercentText");
+const onboardingTips = document.getElementById("onboardingTips");
+const hideOnboardingBtn = document.getElementById("hideOnboardingBtn");
 
 const searchInput = document.getElementById("searchInput");
 const categoryTabs = document.getElementById("categoryTabs");
@@ -66,6 +73,7 @@ const MAX_ROOM_DIMENSION_PX = 2048;
 const TARGET_ROOM_FILE_BYTES = 2_500_000;
 const AUTOSAVE_INTERVAL_MS = 25_000;
 const AUTOSAVE_STORAGE_KEY = "furniture-mvp-autosave-v1";
+const ONBOARDING_DISMISSED_STORAGE_KEY = "furniture-mvp-onboarding-dismissed-v1";
 
 let selectedRoomFile = null;
 let selectedRoomUrl = "";
@@ -246,7 +254,8 @@ function updateUndoRedoButtons() {
 
 function updateRemoveButtonsState() {
   const enabled = Boolean(selectedRoomFile) && !isRendering;
-  removeFurnitureBtn.disabled = !enabled;
+  modeInsertBtn.disabled = isRendering;
+  modeRemoveBtn.disabled = !enabled;
   const hasRect = Boolean(removeSelection);
   const hasMask = maskDirty;
   confirmRemoveBtn.disabled = !enabled || (!hasRect && !hasMask);
@@ -255,6 +264,44 @@ function updateRemoveButtonsState() {
   removeBrushBtn.disabled = !enabled;
   removeEraserBtn.disabled = !enabled;
   clearMaskBtn.disabled = !enabled || !hasMask;
+}
+
+function updateModeUI() {
+  const removeActive = isRemoveMode;
+  workspace.classList.toggle("mode-remove", removeActive);
+  workspace.classList.toggle("mode-insert", !removeActive);
+  canvasSurface.classList.toggle("remove-mode", removeActive);
+  modeInsertBtn.classList.toggle("active", !removeActive);
+  modeRemoveBtn.classList.toggle("active", removeActive);
+  modeInsertBtn.setAttribute("aria-selected", String(!removeActive));
+  modeRemoveBtn.setAttribute("aria-selected", String(removeActive));
+  modePanelBadge.classList.toggle("mode-remove", removeActive);
+  modePanelBadge.classList.toggle("mode-insert", !removeActive);
+  modePanelIcon.textContent = removeActive ? "🧹" : "🛋️";
+  modePanelLabel.textContent = removeActive ? "Режим: Удаление мебели" : "Режим: Вставка мебели";
+}
+
+function isOnboardingDismissed() {
+  try {
+    return localStorage.getItem(ONBOARDING_DISMISSED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function updateOnboardingVisibility() {
+  if (!onboardingTips) return;
+  onboardingTips.hidden = isOnboardingDismissed();
+}
+
+function dismissOnboardingForever() {
+  try {
+    localStorage.setItem(ONBOARDING_DISMISSED_STORAGE_KEY, "1");
+  } catch {
+    // ignore storage failures
+  }
+  updateOnboardingVisibility();
+  setStatus("Подсказки скрыты. Можно включить их позже через localStorage.");
 }
 
 function resetResult() {
@@ -429,44 +476,7 @@ async function restoreAutoSavedProject() {
   try {
     const project = JSON.parse(raw);
     if (!project?.room?.data_url) return;
-    const file = await dataUrlToFile(
-      project.room.data_url,
-      project.room.name || "room-autosave.jpg",
-      project.room.type || "image/jpeg"
-    );
-    applyRoomFromBlob(file, file.name);
-    sceneObjects = Array.isArray(project.scene_objects) ? project.scene_objects.map((o) => ({ ...o })) : [];
-    activeSceneObjectId = project.active_scene_object_id || sceneObjects[0]?.id || null;
-    manualLayerOrdering = Boolean(project.manual_layer_ordering);
-    selectedFurnitureId = project.selected_furniture_id || selectedFurnitureId;
-    selectedCategory = project.selected_category || selectedCategory;
-    searchQuery = project.search_query || searchQuery;
-    removeModeTool = project.remove_mode_tool || removeModeTool;
-    uidCounter = Math.max(uidCounter, ...sceneObjects.map((obj) => Number(String(obj.id || "").replace(/[^\d]/g, "")) || 1)) + 1;
-    renderCategoryTabs();
-    renderFurnitureGrid();
-    renderSceneObjects();
-    renderLayersPanel();
-    updateRenderButtonState();
-    resetResult();
-    clearMaskCanvas();
-    if (project.remove_mask_data_url) {
-      const img = new Image();
-      await new Promise((resolve, reject) => {
-        img.onload = () => resolve();
-        img.onerror = () => reject(new Error("Не удалось загрузить autosave маску"));
-        img.src = project.remove_mask_data_url;
-      });
-      resizeMaskCanvas();
-      const ctx = removeMaskCanvas.getContext("2d");
-      if (ctx) {
-        ctx.clearRect(0, 0, removeMaskCanvas.width, removeMaskCanvas.height);
-        ctx.drawImage(img, 0, 0, removeMaskCanvas.width, removeMaskCanvas.height);
-        maskDirty = true;
-      }
-    }
-    updateRemoveButtonsState();
-    updateUndoRedoButtons();
+    await applyLoadedProject(project, true);
     setStatus("Восстановлен автосохранённый проект");
   } catch (error) {
     console.warn("Failed to restore autosave:", error);
@@ -1059,7 +1069,7 @@ function updateRemoveToolButtons() {
 
 function setRemoveMode(next) {
   isRemoveMode = Boolean(next);
-  canvasSurface.classList.toggle("remove-mode", isRemoveMode);
+  updateModeUI();
   if (isRemoveMode) {
     confirmRemoveBtn.hidden = false;
     cancelRemoveBtn.hidden = false;
@@ -1068,7 +1078,6 @@ function setRemoveMode(next) {
     removeEraserBtn.hidden = false;
     removeBrushSizeWrap.hidden = false;
     clearMaskBtn.hidden = false;
-    removeFurnitureBtn.hidden = true;
     resizeMaskCanvas();
     removeMaskCanvas.hidden = false;
     setStatus("Режим удаления: прямоугольник, кисть или ластик.");
@@ -1080,7 +1089,6 @@ function setRemoveMode(next) {
     removeEraserBtn.hidden = true;
     removeBrushSizeWrap.hidden = true;
     clearMaskBtn.hidden = true;
-    removeFurnitureBtn.hidden = false;
     clearRemoveSelection();
     clearMaskCanvas();
     removeMaskCanvas.hidden = true;
@@ -1591,6 +1599,58 @@ async function handleLoadProject(event) {
   }
 }
 
+async function applyLoadedProject(project, fromAutosave = false) {
+  if (!project || typeof project !== "object") {
+    throw new Error("Некорректный формат проекта");
+  }
+  if (!project?.room?.data_url) {
+    throw new Error("В файле проекта нет изображения комнаты");
+  }
+  const roomFile = await dataUrlToFile(
+    project.room.data_url,
+    project.room.name || "room-loaded.jpg",
+    project.room.type || "image/jpeg"
+  );
+  applyRoomFromBlob(roomFile, roomFile.name);
+  sceneObjects = Array.isArray(project.scene_objects) ? project.scene_objects.map((obj) => ({ ...obj })) : [];
+  activeSceneObjectId = project.active_scene_object_id || sceneObjects[0]?.id || null;
+  manualLayerOrdering = Boolean(project.manual_layer_ordering);
+  selectedFurnitureId = project.selected_furniture_id || selectedFurnitureId;
+  selectedCategory = project.selected_category || selectedCategory;
+  searchQuery = (project.search_query || searchQuery).toLowerCase();
+  searchInput.value = searchQuery;
+  const loadedRemoveTool = String(project.remove_mode_tool || "");
+  removeModeTool = ["rect", "brush", "eraser"].includes(loadedRemoveTool) ? loadedRemoveTool : "rect";
+  uidCounter = Math.max(uidCounter, ...sceneObjects.map((obj) => Number(String(obj.id || "").replace(/[^\d]/g, "")) || 1)) + 1;
+  removeUnknownSceneObjects();
+  renderCategoryTabs();
+  renderFurnitureGrid();
+  setRemoveMode(false);
+  resetResult();
+  clearMaskCanvas();
+  if (project.remove_mask_data_url) {
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error("Не удалось загрузить маску из проекта"));
+      img.src = project.remove_mask_data_url;
+    });
+    resizeMaskCanvas();
+    const ctx = removeMaskCanvas.getContext("2d");
+    if (ctx) {
+      ctx.clearRect(0, 0, removeMaskCanvas.width, removeMaskCanvas.height);
+      ctx.drawImage(img, 0, 0, removeMaskCanvas.width, removeMaskCanvas.height);
+      maskDirty = true;
+    }
+  }
+  renderSceneObjects();
+  renderLayersPanel();
+  updateRenderButtonState();
+  updateRemoveButtonsState();
+  updateUndoRedoButtons();
+  if (!fromAutosave) updateOnboardingVisibility();
+}
+
 roomImageInput.addEventListener("change", handleRoomFileChange);
 canvasSurface.addEventListener("click", handleCanvasClick);
 canvasSurface.addEventListener("pointerdown", handleRemovePointerDown);
@@ -1635,8 +1695,17 @@ redoBtn.addEventListener("click", redoHistory);
 saveProjectBtn.addEventListener("click", handleSaveProject);
 loadProjectInput.addEventListener("change", handleLoadProject);
 
-removeFurnitureBtn.addEventListener("click", () => {
-  if (!selectedRoomFile || isRendering) return;
+modeInsertBtn.addEventListener("click", () => {
+  if (isRendering) return;
+  setRemoveMode(false);
+  setStatus("Режим вставки: перетащи мебель на сцену.");
+});
+modeRemoveBtn.addEventListener("click", () => {
+  if (isRendering) return;
+  if (!selectedRoomFile) {
+    setStatus("Сначала загрузи фото комнаты, затем включай удаление.", true);
+    return;
+  }
   setRemoveMode(true);
 });
 removeRectBtn.addEventListener("click", () => {
@@ -1670,6 +1739,7 @@ searchInput.addEventListener("input", (event) => {
 });
 
 compareSlider.addEventListener("input", updateCompareUI);
+hideOnboardingBtn.addEventListener("click", dismissOnboardingForever);
 
 roomPreview.addEventListener("load", () => {
   updateEmptyHint();
@@ -1689,6 +1759,8 @@ updateEmptyHint();
 hideSnapGuides();
 hideCompare();
 renderLayersPanel();
+updateModeUI();
+updateOnboardingVisibility();
 updateUndoRedoButtons();
 updateRemoveButtonsState();
 loadFurnitureCatalog()

@@ -49,13 +49,39 @@
         </footer>
       </section>
 
-      <section class="workspace">
+      <section class="workspace mode-insert">
         <header class="toolbar">
           <div class="toolbar-left">
             <label class="ghost-btn upload-room">
               <input id="roomImageInput" type="file" accept=".jpg,.jpeg,.png,.webp" />
               <span>Загрузить фото</span>
             </label>
+            <div class="mode-segment" role="tablist" aria-label="Режим работы со сценой">
+              <button
+                id="modeInsertBtn"
+                class="mode-segment-btn active"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                title="Добавляй и двигай мебель"
+              >
+                🛋️ Вставка мебели
+              </button>
+              <button
+                id="modeRemoveBtn"
+                class="mode-segment-btn danger"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                title="Выделяй область и удаляй старую мебель"
+              >
+                🧹 Удаление мебели
+              </button>
+            </div>
+            <div id="modePanelBadge" class="mode-panel-badge mode-insert">
+              <span id="modePanelIcon" class="mode-panel-icon" aria-hidden="true">🛋️</span>
+              <span id="modePanelLabel">Режим: Вставка мебели</span>
+            </div>
             <button id="undoBtn" class="ghost-btn" type="button" disabled>Отменить</button>
             <button id="redoBtn" class="ghost-btn" type="button" disabled>Вернуть</button>
             <button id="saveProjectBtn" class="ghost-btn" type="button">Сохранить проект</button>
@@ -63,7 +89,6 @@
               <input id="loadProjectInput" type="file" accept=".json,application/json" />
               <span>Загрузить проект</span>
             </label>
-            <button id="removeFurnitureBtn" class="ghost-btn" type="button">Удалить мебель</button>
             <button id="removeRectBtn" class="ghost-btn" type="button" hidden>Прямоугольник</button>
             <button id="removeBrushBtn" class="ghost-btn" type="button" hidden>Кисть</button>
             <button id="removeEraserBtn" class="ghost-btn" type="button" hidden>Ластик</button>
@@ -106,6 +131,24 @@
               <canvas id="removeMaskCanvas" class="remove-mask-canvas" hidden></canvas>
               <div id="removeSelectionBox" class="remove-selection-box" hidden></div>
               <div id="sceneObjectsLayer" class="scene-objects-layer"></div>
+              <section id="onboardingTips" class="onboarding-tips" hidden>
+                <div class="onboarding-head">
+                  <strong>Быстрый онбординг: 8 подсказок</strong>
+                  <button id="hideOnboardingBtn" class="onboarding-hide-btn" type="button">
+                    Больше не показывать
+                  </button>
+                </div>
+                <ol class="onboarding-list">
+                  <li>Загрузи фото комнаты.</li>
+                  <li>Перетащи мебель из каталога на сцену.</li>
+                  <li>Нажми «Сгенерировать» или переключись в удаление старой мебели.</li>
+                  <li>Колесо мыши меняет масштаб, Shift + колесо вращает объект.</li>
+                  <li>Слои справа можно перетаскивать — так меняется перекрытие предметов.</li>
+                  <li>На сцену можно поставить до 6 предметов одновременно.</li>
+                  <li>Сохраняй проект в JSON и продолжай с того же места позже.</li>
+                  <li>Сравни «До/После» ползунком и скачай финальный результат.</li>
+                </ol>
+              </section>
               <div id="emptyHint" class="hint-empty">Загрузи фото комнаты, чтобы начать</div>
             </div>
           </div>
