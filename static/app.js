@@ -17,11 +17,16 @@ const modeRemoveBtn = document.getElementById("modeRemoveBtn");
 const modePanelBadge = document.getElementById("modePanelBadge");
 const modePanelIcon = document.getElementById("modePanelIcon");
 const modePanelLabel = document.getElementById("modePanelLabel");
+const duplicateObjectBtn = document.getElementById("duplicateObjectBtn");
+const deleteObjectBtn = document.getElementById("deleteObjectBtn");
+const centerObjectBtn = document.getElementById("centerObjectBtn");
+const resetSizeBtn = document.getElementById("resetSizeBtn");
 
 const undoBtn = document.getElementById("undoBtn");
 const redoBtn = document.getElementById("redoBtn");
 const saveProjectBtn = document.getElementById("saveProjectBtn");
 const loadProjectInput = document.getElementById("loadProjectInput");
+const saveStateText = document.getElementById("saveStateText");
 
 const removeRectBtn = document.getElementById("removeRectBtn");
 const removeBrushBtn = document.getElementById("removeBrushBtn");
@@ -114,6 +119,7 @@ let cachedAutoSaveRoomDataUrl = "";
 let cachedAutoSaveRoomSignature = "";
 let maskVersion = 0;
 let maskNeedsRecount = false;
+let isProjectDirty = false;
 
 const ratioCache = new Map();
 const historyPast = [];
@@ -133,6 +139,7 @@ function setUploadStatus(text, isError = false) {
   uploadStatusText.textContent = text;
   uploadStatusText.style.color = isError ? "#dc2626" : "#6b7280";
 }
+
 
 function normalizeCategory(value) {
   return (value || "other").trim().toLowerCase() || "other";
@@ -270,6 +277,94 @@ function updateRemoveButtonsState() {
   removeBrushBtn.disabled = !enabled;
   removeEraserBtn.disabled = !enabled;
   clearMaskBtn.disabled = !enabled || !hasMask;
+  updateQuickActionButtons();
+}
+
+function updateSaveStateIndicator() {
+  if (!saveStateText) return;
+  saveStateText.textContent = isProjectDirty ? "Есть изменения" : "Сохранено";
+  saveStateText.classList.toggle("dirty", isProjectDirty);
+  saveStateText.classList.toggle("saved", !isProjectDirty);
+}
+
+function setProjectDirty(nextDirty) {
+  const next = Boolean(nextDirty);
+  if (next === isProjectDirty) return;
+  isProjectDirty = next;
+  updateSaveStateIndicator();
+}
+
+function updateQuickActionButtons() {
+  const active = getActiveSceneObject();
+  const enabled = Boolean(active) && !isRendering && !isRemoveMode;
+  duplicateObjectBtn.disabled = !enabled || sceneObjects.length >= MAX_SCENE_OBJECTS;
+  deleteObjectBtn.disabled = !enabled;
+  centerObjectBtn.disabled = !enabled;
+  resetSizeBtn.disabled = !enabled;
+}
+
+function duplicateActiveObject() {
+  const active = getActiveSceneObject();
+  if (!active || isRendering) return;
+  const drawRect = getImageDrawRect(roomPreview);
+  if (!drawRect) return;
+  const dx = 0.03;
+  const dy = 0.03;
+  addSceneObject(active.furnitureId, clamp(active.x + dx, 0, 1), clamp(active.y + dy, 0, 1), active.scale, active.rotationDeg);
+  setProjectDirty(true);
+  setStatus("Объект дублирован");
+}
+
+function deleteActiveObject() {
+  const active = getActiveSceneObject();
+  if (!active || isRendering) return;
+  const idx = sceneObjects.findIndex((obj) => obj.id === active.id);
+  if (idx < 0) return;
+  pushHistory();
+  sceneObjects.splice(idx, 1);
+  normalizeLayerOrders();
+  activeSceneObjectId = sceneObjects[Math.max(0, idx - 1)]?.id || sceneObjects[0]?.id || null;
+  renderSceneObjects();
+  renderLayersPanel();
+  updateRenderButtonState();
+  updateUndoRedoButtons();
+  updateQuickActionButtons();
+  setProjectDirty(true);
+  resetResult();
+  setStatus("Объект удалён");
+}
+
+function centerActiveObject() {
+  const active = getActiveSceneObject();
+  const drawRect = getImageDrawRect(roomPreview);
+  if (!active || !drawRect || isRendering) return;
+  pushHistory();
+  active.x = 0.5;
+  active.y = 1;
+  applySceneBoundsAndSnap(active, drawRect);
+  renderSceneObjects();
+  renderLayersPanel();
+  updateUndoRedoButtons();
+  updateQuickActionButtons();
+  setProjectDirty(true);
+  resetResult();
+  setStatus("Объект выровнен по центру");
+}
+
+function resetActiveObjectScale() {
+  const active = getActiveSceneObject();
+  const drawRect = getImageDrawRect(roomPreview);
+  if (!active || !drawRect || isRendering) return;
+  pushHistory();
+  active.scale = 1;
+  applySceneBoundsAndSnap(active, drawRect);
+  renderSceneObjects();
+  renderLayersPanel();
+  updateUndoRedoButtons();
+  updateQuickActionButtons();
+  setProjectDirty(true);
+  resetResult();
+  setStatus("Размер объекта сброшен");
 }
 
 function updateModeUI() {
@@ -581,6 +676,7 @@ function pushHistory() {
   historyPast.push(getHistorySnapshot());
   if (historyPast.length > MAX_HISTORY) historyPast.shift();
   historyFuture.length = 0;
+  setProjectDirty(true);
   updateUndoRedoButtons();
 }
 
@@ -676,6 +772,7 @@ function setActiveSceneObject(id) {
   if (active) coordsText.textContent = `Объект: x=${active.x.toFixed(3)}, y=${active.y.toFixed(3)}`;
   renderSceneObjects();
   renderLayersPanel();
+  updateQuickActionButtons();
 }
 
 function renderCategoryTabs() {
@@ -1061,7 +1158,7 @@ function updateSceneObjectRotation(sceneObjectId, deltaDeg) {
   setStatus(`Поворот: ${Math.round(target.rotationDeg)}°`);
 }
 
-function addSceneObject(furnitureId, x, y, scale = 1, rotationDeg = 0) {
+function addSceneObject(furnitureId, x, y, scale = 1, rotationDeg = 0, options = {}) {
   if (sceneObjects.length >= MAX_SCENE_OBJECTS) {
     setStatus(`Можно добавить максимум ${MAX_SCENE_OBJECTS} объектов`, true);
     return;
@@ -1091,6 +1188,8 @@ function addSceneObject(furnitureId, x, y, scale = 1, rotationDeg = 0) {
   updateRenderButtonState();
   resetResult();
   updateUndoRedoButtons();
+  updateQuickActionButtons();
+  if (options.markDirty !== false) setProjectDirty(true);
   coordsText.textContent = `Объект: x=${sceneObject.x.toFixed(3)}, y=${sceneObject.y.toFixed(3)}`;
   setStatus(`Предмет "${furniture.name}" добавлен на сцену`);
 }
@@ -1144,6 +1243,7 @@ function updateRemoveToolButtons() {
 function setRemoveMode(next) {
   isRemoveMode = Boolean(next);
   updateModeUI();
+  const prevDirty = isProjectDirty;
   if (isRemoveMode) {
     confirmRemoveBtn.hidden = false;
     cancelRemoveBtn.hidden = false;
@@ -1169,6 +1269,7 @@ function setRemoveMode(next) {
   }
   updateRemoveToolButtons();
   updateRemoveButtonsState();
+  if (!next && prevDirty !== isProjectDirty) setProjectDirty(prevDirty);
   updateCursorHintVisibility(!cursorHint.hidden);
 }
 
@@ -1370,6 +1471,7 @@ function resetSceneState() {
   renderLayersPanel();
   updateRenderButtonState();
   updateRemoveButtonsState();
+  updateQuickActionButtons();
 }
 
 function handleRoomFileChange(event) {
@@ -1642,6 +1744,7 @@ async function handleFurnitureUpload() {
     newFurnitureImage.value = "";
     setUploadStatus(`Добавлено: ${data.item.name}`);
     setStatus(`Добавлено: ${data.item.name}. Перетащи предмет на сцену.`);
+    setProjectDirty(true);
   } catch (error) {
     console.error(error);
     setUploadStatus(`Ошибка: ${error.message}`, true);
@@ -1662,6 +1765,7 @@ function handleClear() {
   resetResult();
   updateEmptyHint();
   updateUndoRedoButtons();
+  setProjectDirty(true);
   updateCursorHintVisibility(false);
   setStatus("Сцена очищена");
 }
@@ -1680,6 +1784,7 @@ async function handleSaveProject() {
   a.download = `project-${Date.now()}.json`;
   a.click();
   URL.revokeObjectURL(url);
+  setProjectDirty(false);
   setStatus("Проект сохранён в JSON");
 }
 
@@ -1693,6 +1798,7 @@ async function handleLoadProject(event) {
     pushHistory();
     await applyLoadedProject(project, false);
     persistAutoSavedProject();
+    setProjectDirty(false);
     setStatus("Проект загружен");
   } catch (error) {
     console.error(error);
@@ -1751,6 +1857,8 @@ async function applyLoadedProject(project, fromAutosave = false) {
   updateRenderButtonState();
   updateRemoveButtonsState();
   updateUndoRedoButtons();
+  updateQuickActionButtons();
+  setProjectDirty(false);
   updateCursorHintVisibility(false);
   if (!fromAutosave) updateOnboardingVisibility();
 }
@@ -1808,6 +1916,10 @@ undoBtn.addEventListener("click", undoHistory);
 redoBtn.addEventListener("click", redoHistory);
 saveProjectBtn.addEventListener("click", handleSaveProject);
 loadProjectInput.addEventListener("change", handleLoadProject);
+duplicateObjectBtn.addEventListener("click", duplicateActiveObject);
+deleteObjectBtn.addEventListener("click", deleteActiveObject);
+centerObjectBtn.addEventListener("click", centerActiveObject);
+resetSizeBtn.addEventListener("click", resetActiveObjectScale);
 
 modeInsertBtn.addEventListener("click", () => {
   if (isRendering) return;
@@ -1862,12 +1974,14 @@ roomPreview.addEventListener("load", () => {
   resizeMaskCanvas();
   renderSceneObjects();
   renderLayersPanel();
+  updateQuickActionButtons();
   if (isRemoveMode && removeSelection) drawRemoveSelectionBox(removeSelection);
 });
 
 window.addEventListener("resize", () => {
   resizeMaskCanvas();
   renderSceneObjects();
+  updateQuickActionButtons();
   if (isRemoveMode && removeSelection) drawRemoveSelectionBox(removeSelection);
 });
 

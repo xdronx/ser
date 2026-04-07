@@ -72,6 +72,14 @@
               <span id="modePanelIcon" class="mode-panel-icon" aria-hidden="true">🛋️</span>
               <span id="modePanelLabel">Режим: Вставка мебели</span>
             </div>
+            <div class="quick-actions" aria-label="Быстрые действия с объектом">
+              <button id="duplicateObjectBtn" class="ghost-btn quick-action" type="button" disabled>
+                Дублировать объект
+              </button>
+              <button id="deleteObjectBtn" class="ghost-btn quick-action" type="button" disabled>Удалить объект</button>
+              <button id="centerObjectBtn" class="ghost-btn quick-action" type="button" disabled>По центру</button>
+              <button id="resetSizeBtn" class="ghost-btn quick-action" type="button" disabled>Сбросить размер</button>
+            </div>
             <button id="undoBtn" class="ghost-btn" type="button" disabled>Отменить</button>
             <button id="redoBtn" class="ghost-btn" type="button" disabled>Вернуть</button>
             <button id="saveProjectBtn" class="ghost-btn" type="button">Сохранить проект</button>
@@ -169,7 +177,10 @@
 
         <footer class="bottom-status">
           <p id="statusText">Подготовка...</p>
-          <p id="coordsText">Точка не выбрана</p>
+          <div class="bottom-status-right">
+            <p id="saveStateText" class="save-state saved">Сохранено</p>
+            <p id="coordsText">Точка не выбрана</p>
+          </div>
         </footer>
       </section>
     </div>

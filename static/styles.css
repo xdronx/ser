@@ -311,6 +311,42 @@ body {
   line-height: 1;
 }
 
+.quick-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.quick-action {
+  border: 1px solid #d6deee;
+  background: #fff;
+  color: #1f2937;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.quick-action:hover {
+  filter: brightness(0.98);
+}
+
+.quick-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.quick-action.warning {
+  border-color: #fecaca;
+  color: #991b1b;
+  background: #fff1f2;
+}
+
 .brush-size-wrap {
   display: inline-flex;
   align-items: center;
@@ -853,6 +889,12 @@ body {
   gap: 12px;
 }
 
+.bottom-status-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
 #statusText {
   margin: 0;
   color: var(--muted);
@@ -863,6 +905,19 @@ body {
   margin: 0;
   color: #4b5563;
   font-size: 12px;
+}
+
+.save-state {
+  margin: 0;
+  min-width: 130px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  color: #059669;
+}
+
+.save-state.dirty {
+  color: #b45309;
 }
 
 #downloadLink {
