@@ -138,6 +138,10 @@ def get_furniture_item(furniture_id: str) -> dict | None:
     return None
 
 
+def get_catalog_map() -> dict[str, dict]:
+    return {item.get("id", ""): item for item in load_catalog() if item.get("id")}
+
+
 def serialize_furniture_item(item: dict) -> dict:
     data = dict(item)
     asset_file = (item.get("asset_file") or "").strip()
@@ -982,6 +986,7 @@ def api_render():
     if len(scene_objects_input) > 6:
         return jsonify({"error": "scene can contain at most 6 objects"}), 400
 
+    catalog_map = get_catalog_map()
     scene_objects: list[dict] = []
     for idx, raw_obj in enumerate(scene_objects_input):
         if not isinstance(raw_obj, dict):
@@ -991,7 +996,7 @@ def api_render():
         if not furniture_id:
             return jsonify({"error": f"scene_objects[{idx}].furniture_id is required"}), 400
 
-        furniture = get_furniture_item(furniture_id)
+        furniture = catalog_map.get(furniture_id)
         if not furniture:
             return jsonify({"error": f"Unknown furniture_id at scene_objects[{idx}]"}), 400
 
