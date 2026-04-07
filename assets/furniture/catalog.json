@@ -1,0 +1,37 @@
+[
+  {
+    "id": "chair-modern-01",
+    "name": "Современный стул",
+    "category": "chair",
+    "asset_file": "chair.png",
+    "prompt": "A modern minimalist chair with wooden legs"
+  },
+  {
+    "id": "sofa-scandi-01",
+    "name": "Сканди-диван",
+    "category": "sofa",
+    "asset_file": "sofa.png",
+    "prompt": "A cozy Scandinavian style sofa"
+  },
+  {
+    "id": "table-round-01",
+    "name": "Круглый стол",
+    "category": "table",
+    "asset_file": "table.png",
+    "prompt": "A round dining table in modern style"
+  },
+  {
+    "id": "lamp-floor-01",
+    "name": "Напольная лампа",
+    "category": "lamp",
+    "asset_file": "lamp.png",
+    "prompt": "A slim floor lamp with warm light"
+  },
+  {
+    "id": "bed-soft-01",
+    "name": "Кровать",
+    "category": "bed",
+    "asset_file": "bed.png",
+    "prompt": "A soft queen bed with neutral bedding"
+  }
+]

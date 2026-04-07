@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>МебельВставка</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="rail">
+        <div class="brand">
+          <div class="brand-icon">F</div>
+          <div class="brand-name">Мебель</div>
+        </div>
+      </aside>
+
+      <section class="catalog">
+        <header class="catalog-head">
+          <h2>Мебель</h2>
+        </header>
+
+        <div class="catalog-search">
+          <input id="searchInput" type="search" placeholder="Поиск мебели..." />
+        </div>
+
+        <div id="categoryTabs" class="chips"></div>
+
+        <div id="furnitureGrid" class="furniture-grid"></div>
+
+        <footer class="catalog-footer">
+          <div class="catalog-upload">
+            <input id="newFurnitureName" type="text" placeholder="Название (например: Стул 2)" />
+            <input id="newFurnitureCategory" type="text" placeholder="Категория: chair/table" value="chair" />
+            <input id="newFurnitureImage" type="file" accept=".png,.jpg,.jpeg,.webp" />
+            <button id="uploadFurnitureBtn" type="button">Добавить предмет</button>
+            <p id="uploadStatusText">Можно добавить свои реальные предметы.</p>
+          </div>
+        </footer>
+      </section>
+
+      <section class="workspace mode-insert">
+        <header class="toolbar">
+          <div class="toolbar-left">
+            <label class="ghost-btn upload-room">
+              <input id="roomImageInput" type="file" accept=".jpg,.jpeg,.png,.webp" />
+              <span>Загрузить фото</span>
+            </label>
+            <div class="mode-segment" role="tablist" aria-label="Режим работы со сценой">
+              <button
+                id="modeInsertBtn"
+                class="mode-segment-btn active"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                title="Добавляй и двигай мебель"
+              >
+                🛋️ Вставка мебели
+              </button>
+              <button
+                id="modeRemoveBtn"
+                class="mode-segment-btn danger"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                title="Выделяй область и удаляй старую мебель"
+              >
+                🧹 Удаление мебели
+              </button>
+            </div>
+            <div id="modePanelBadge" class="mode-panel-badge mode-insert">
+              <span id="modePanelIcon" class="mode-panel-icon" aria-hidden="true">🛋️</span>
+              <span id="modePanelLabel">Режим: Вставка мебели</span>
+            </div>
+            <div class="quick-actions" aria-label="Быстрые действия с объектом">
+              <button id="duplicateObjectBtn" class="ghost-btn quick-action" type="button" disabled>
+                Дублировать объект
+              </button>
+              <button id="deleteObjectBtn" class="ghost-btn quick-action" type="button" disabled>Удалить объект</button>
+              <button id="centerObjectBtn" class="ghost-btn quick-action" type="button" disabled>По центру</button>
+              <button id="resetSizeBtn" class="ghost-btn quick-action" type="button" disabled>Сбросить размер</button>
+            </div>
+            <button id="undoBtn" class="ghost-btn" type="button" disabled>Отменить</button>
+            <button id="redoBtn" class="ghost-btn" type="button" disabled>Вернуть</button>
+            <button id="saveProjectBtn" class="ghost-btn" type="button">Сохранить проект</button>
+            <label class="ghost-btn upload-room">
+              <input id="loadProjectInput" type="file" accept=".json,application/json" />
+              <span>Загрузить проект</span>
+            </label>
+            <button id="removeRectBtn" class="ghost-btn" type="button" hidden>Прямоугольник</button>
+            <button id="removeBrushBtn" class="ghost-btn" type="button" hidden>Кисть</button>
+            <button id="removeEraserBtn" class="ghost-btn" type="button" hidden>Ластик</button>
+            <label id="removeBrushSizeWrap" class="ghost-btn brush-size-wrap" hidden>
+              Размер
+              <input id="removeBrushSize" type="range" min="8" max="96" value="28" />
+            </label>
+            <button id="clearMaskBtn" class="ghost-btn" type="button" hidden>Очистить маску</button>
+            <button id="confirmRemoveBtn" class="ghost-btn ghost-btn-danger" type="button" hidden disabled>
+              Подтвердить удаление
+            </button>
+            <button id="cancelRemoveBtn" class="ghost-btn" type="button" hidden>Отмена</button>
+            <button id="clearBtn" class="ghost-btn" type="button">Очистить</button>
+          </div>
+
+          <div class="toolbar-right">
+            <a id="downloadLink" class="download-btn" href="#" download hidden>Скачать результат</a>
+            <button id="renderBtn" class="primary-btn" type="button" disabled>Сгенерировать</button>
+          </div>
+        </header>
+
+        <section id="renderProgressWrap" class="render-progress" hidden>
+          <div class="render-progress-top">
+            <span id="renderProgressLabel">Нейросеть работает...</span>
+            <strong id="renderProgressPercent">0%</strong>
+          </div>
+          <div class="render-progress-track">
+            <div id="renderProgressBar" class="render-progress-bar"></div>
+          </div>
+        </section>
+
+        <div class="workspace-main">
+          <div class="canvas-wrap">
+            <div class="canvas-surface">
+              <img id="roomPreview" alt="Комната" />
+              <img id="resultImage" alt="Результат генерации" />
+              <div id="snapGuideV" class="snap-guide snap-guide-v" hidden></div>
+              <div id="snapGuideH" class="snap-guide snap-guide-h" hidden></div>
+              <canvas id="removeMaskCanvas" class="remove-mask-canvas" hidden></canvas>
+              <div id="removeSelectionBox" class="remove-selection-box" hidden></div>
+              <div id="sceneObjectsLayer" class="scene-objects-layer"></div>
+              <section id="onboardingTips" class="onboarding-tips" hidden>
+                <div class="onboarding-head">
+                  <strong>Быстрый онбординг: 8 подсказок</strong>
+                  <button id="hideOnboardingBtn" class="onboarding-hide-btn" type="button">
+                    Больше не показывать
+                  </button>
+                </div>
+                <ol class="onboarding-list">
+                  <li>Загрузи фото комнаты.</li>
+                  <li>Перетащи мебель из каталога на сцену.</li>
+                  <li>Нажми «Сгенерировать» или переключись в удаление старой мебели.</li>
+                  <li>Колесо мыши меняет масштаб, Shift + колесо вращает объект.</li>
+                  <li>Слои справа можно перетаскивать — так меняется перекрытие предметов.</li>
+                  <li>На сцену можно поставить до 6 предметов одновременно.</li>
+                  <li>Сохраняй проект в JSON и продолжай с того же места позже.</li>
+                  <li>Сравни «До/После» ползунком и скачай финальный результат.</li>
+                </ol>
+              </section>
+              <div id="cursorHint" class="cursor-hint" hidden></div>
+              <div id="emptyHint" class="hint-empty">Загрузи фото комнаты, чтобы начать</div>
+            </div>
+          </div>
+
+          <aside class="layers-panel">
+            <header class="layers-head">
+              <h3>Слои</h3>
+            </header>
+            <div id="layersEmpty" class="layers-empty">Добавь объекты на сцену</div>
+            <div id="layersList" class="layers-list"></div>
+          </aside>
+        </div>
+
+        <section id="compareWrap" class="compare-wrap" hidden>
+          <div class="compare-head">
+            <strong>Сравнение до / после</strong>
+            <span id="comparePercentText">50%</span>
+          </div>
+          <div id="compareStage" class="compare-stage">
+            <img id="compareBeforeImage" alt="До" />
+            <div id="compareAfterClip" class="compare-after-clip">
+              <img id="compareAfterImage" alt="После" />
+            </div>
+            <div id="compareDivider" class="compare-divider"></div>
+          </div>
+          <input id="compareSlider" type="range" min="0" max="100" value="50" />
+        </section>
+
+        <footer class="bottom-status">
+          <p id="statusText">Подготовка...</p>
+          <div class="bottom-status-right">
+            <p id="saveStateText" class="save-state saved">Сохранено</p>
+            <p id="coordsText">Точка не выбрана</p>
+          </div>
+        </footer>
+      </section>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
