@@ -44,6 +44,7 @@ const compareSlider = document.getElementById("compareSlider");
 const comparePercentText = document.getElementById("comparePercentText");
 const onboardingTips = document.getElementById("onboardingTips");
 const hideOnboardingBtn = document.getElementById("hideOnboardingBtn");
+const cursorHint = document.getElementById("cursorHint");
 
 const searchInput = document.getElementById("searchInput");
 const categoryTabs = document.getElementById("categoryTabs");
@@ -302,6 +303,38 @@ function dismissOnboardingForever() {
   }
   updateOnboardingVisibility();
   setStatus("Подсказки скрыты. Можно включить их позже через localStorage.");
+}
+
+function getCursorHintText() {
+  if (isRemoveMode) {
+    if (removeModeTool === "brush") return "Удаление: веди кистью по мебели";
+    if (removeModeTool === "eraser") return "Ластик: стирай область маски";
+    return "Удаление: протяни прямоугольник по мебели";
+  }
+  return selectedFurnitureId
+    ? "Вставка: кликни по сцене, чтобы добавить мебель"
+    : "Вставка: сначала выбери мебель в каталоге";
+}
+
+function updateCursorHintPosition(clientX, clientY) {
+  if (!cursorHint || !canvasSurface) return;
+  const rect = canvasSurface.getBoundingClientRect();
+  const localX = clamp(clientX - rect.left + 14, 8, Math.max(8, rect.width - 220));
+  const localY = clamp(clientY - rect.top + 14, 8, Math.max(8, rect.height - 40));
+  cursorHint.style.left = `${localX}px`;
+  cursorHint.style.top = `${localY}px`;
+}
+
+function updateCursorHintVisibility(visible) {
+  if (!cursorHint) return;
+  if (!visible || !selectedRoomFile || isRendering) {
+    cursorHint.hidden = true;
+    cursorHint.classList.remove("mode-remove");
+    return;
+  }
+  cursorHint.hidden = false;
+  cursorHint.textContent = getCursorHintText();
+  cursorHint.classList.toggle("mode-remove", isRemoveMode);
 }
 
 function resetResult() {
@@ -664,6 +697,7 @@ function renderFurnitureGrid() {
       selectedFurnitureId = item.id;
       renderFurnitureGrid();
       setStatus(`Выбрано: ${item.name}. Перетащи предмет на сцену.`);
+      updateCursorHintVisibility(!cursorHint.hidden);
     });
     card.addEventListener("dragstart", (event) => {
       selectedFurnitureId = item.id;
@@ -1065,6 +1099,7 @@ function updateRemoveToolButtons() {
   removeRectBtn.classList.toggle("active", removeModeTool === "rect");
   removeBrushBtn.classList.toggle("active", removeModeTool === "brush");
   removeEraserBtn.classList.toggle("active", removeModeTool === "eraser");
+  updateCursorHintVisibility(!cursorHint.hidden);
 }
 
 function setRemoveMode(next) {
@@ -1095,6 +1130,7 @@ function setRemoveMode(next) {
   }
   updateRemoveToolButtons();
   updateRemoveButtonsState();
+  updateCursorHintVisibility(!cursorHint.hidden);
 }
 
 function hideRemoveSelectionBox() {
@@ -1245,6 +1281,7 @@ function applyRoomFromBlob(blob, filename = "room.jpg") {
   selectedRoomUrl = URL.createObjectURL(blob);
   roomPreview.src = selectedRoomUrl;
   updateEmptyHint();
+  updateCursorHintVisibility(false);
 }
 
 async function loadFurnitureCatalog() {
@@ -1288,6 +1325,7 @@ function handleRoomFileChange(event) {
     roomPreview.removeAttribute("src");
     resetSceneState();
     updateEmptyHint();
+    updateCursorHintVisibility(false);
     return;
   }
   (async () => {
@@ -1308,6 +1346,7 @@ function handleRoomFileChange(event) {
       updateRenderButtonState();
       updateRemoveButtonsState();
       updateUndoRedoButtons();
+      updateCursorHintVisibility(false);
       if (preparedFile !== file) {
         const kbBefore = Math.round(file.size / 1024);
         const kbAfter = Math.round(preparedFile.size / 1024);
@@ -1335,6 +1374,7 @@ function handleCanvasClick(event) {
   if (!point) return;
   const active = getActiveSceneObject();
   addSceneObject(selectedFurnitureId, point.x, point.y, active?.scale || 1, active?.rotationDeg || 0);
+  updateCursorHintVisibility(!cursorHint.hidden);
 }
 
 function handleCanvasDrop(event) {
@@ -1352,6 +1392,7 @@ function handleCanvasDrop(event) {
   const point = eventToNormalized(event.clientX, event.clientY, true) || { x: 0.5, y: 0.82 };
   const active = getActiveSceneObject();
   addSceneObject(furnitureId, point.x, point.y, active?.scale || 1, active?.rotationDeg || 0);
+  updateCursorHintVisibility(!cursorHint.hidden);
 }
 
 function handleRemovePointerDown(event) {
@@ -1475,6 +1516,7 @@ function handleCancelRemove() {
   if (isRendering) return;
   setRemoveMode(false);
   setStatus("Режим удаления выключен.");
+  updateCursorHintVisibility(!cursorHint.hidden);
 }
 
 async function handleRender() {
@@ -1560,6 +1602,7 @@ function handleClear() {
   resetResult();
   updateEmptyHint();
   updateUndoRedoButtons();
+  updateCursorHintVisibility(false);
   setStatus("Сцена очищена");
 }
 
@@ -1648,11 +1691,22 @@ async function applyLoadedProject(project, fromAutosave = false) {
   updateRenderButtonState();
   updateRemoveButtonsState();
   updateUndoRedoButtons();
+  updateCursorHintVisibility(false);
   if (!fromAutosave) updateOnboardingVisibility();
 }
 
 roomImageInput.addEventListener("change", handleRoomFileChange);
 canvasSurface.addEventListener("click", handleCanvasClick);
+canvasSurface.addEventListener("pointerenter", (event) => {
+  if (!selectedRoomFile || isRendering) return;
+  updateCursorHintPosition(event.clientX, event.clientY);
+  updateCursorHintVisibility(true);
+});
+canvasSurface.addEventListener("pointermove", (event) => {
+  if (cursorHint.hidden) return;
+  updateCursorHintPosition(event.clientX, event.clientY);
+});
+canvasSurface.addEventListener("pointerleave", () => updateCursorHintVisibility(false));
 canvasSurface.addEventListener("pointerdown", handleRemovePointerDown);
 canvasSurface.addEventListener("pointermove", handleRemovePointerMove);
 canvasSurface.addEventListener("pointerup", handleRemovePointerUp);
@@ -1699,6 +1753,7 @@ modeInsertBtn.addEventListener("click", () => {
   if (isRendering) return;
   setRemoveMode(false);
   setStatus("Режим вставки: перетащи мебель на сцену.");
+  updateCursorHintVisibility(!cursorHint.hidden);
 });
 modeRemoveBtn.addEventListener("click", () => {
   if (isRendering) return;
@@ -1707,6 +1762,7 @@ modeRemoveBtn.addEventListener("click", () => {
     return;
   }
   setRemoveMode(true);
+  updateCursorHintVisibility(!cursorHint.hidden);
 });
 removeRectBtn.addEventListener("click", () => {
   removeModeTool = "rect";

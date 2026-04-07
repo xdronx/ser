@@ -509,6 +509,34 @@ body {
   line-height: 1.35;
 }
 
+.cursor-hint {
+  position: absolute;
+  z-index: 12;
+  pointer-events: none;
+  max-width: min(290px, calc(100% - 28px));
+  border: 1px solid #bfdbfe;
+  border-radius: 9px;
+  background: rgba(239, 246, 255, 0.95);
+  color: #1e3a8a;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 9px;
+  box-shadow: 0 6px 18px rgba(30, 64, 175, 0.15);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.cursor-hint:not([hidden]) {
+  opacity: 1;
+}
+
+.cursor-hint.mode-remove {
+  border-color: #fecaca;
+  background: rgba(255, 241, 242, 0.95);
+  color: #991b1b;
+  box-shadow: 0 6px 18px rgba(153, 27, 27, 0.14);
+}
+
 .canvas-surface img {
   position: absolute;
   inset: 0;
