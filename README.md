@@ -116,6 +116,20 @@ API_RATE_LIMIT_PER_MINUTE=30
 
 ---
 
+### Явные схемы API (контракты)
+
+- Backend использует валидацию payload через **Pydantic**:
+  - `SceneObjectInput`
+  - `RemoveBoxInput`
+  - типизированные response-модели для ключевых endpoint'ов (`render`, `jobs`, `furniture`, `health`).
+- Frontend использует единый контракт `scene_objects` через модуль:
+  - `static/contracts.js`
+  - сериализация в API формат выполняется функцией `toApiSceneObjects(...)`.
+
+Это уменьшает риск “тихих” ошибок форматов между UI и backend.
+
+---
+
 ## Шаг 4. Запусти сайт
 
 ```bash

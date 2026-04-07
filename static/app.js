@@ -1,3 +1,5 @@
+import { toApiSceneObjects } from "./contracts.js";
+
 const roomImageInput = document.getElementById("roomImageInput");
 const roomPreview = document.getElementById("roomPreview");
 const resultImage = document.getElementById("resultImage");
@@ -1715,15 +1717,7 @@ async function handleRender() {
   setRenderProgress(1, "Запуск нейросети...");
   resetResult();
   const previousRoomUrl = selectedRoomUrl;
-  const payloadSceneObjects = sortByLayerAsc(sceneObjects).map((obj) => ({
-    id: obj.id,
-    furniture_id: obj.furnitureId,
-    x: obj.x,
-    y: obj.y,
-    scale: obj.scale,
-    rotation_deg: obj.rotationDeg,
-    layer_order: obj.layerOrder,
-  }));
+  const payloadSceneObjects = toApiSceneObjects(sortByLayerAsc(sceneObjects));
   const formData = new FormData();
   formData.append("room_image", selectedRoomFile);
   formData.append("scene_objects", JSON.stringify(payloadSceneObjects));

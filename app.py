@@ -14,6 +14,7 @@ import requests
 from flask import Flask, jsonify, request, send_from_directory
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from dotenv import load_dotenv
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from werkzeug.exceptions import RequestEntityTooLarge
 
 
@@ -136,6 +137,150 @@ SENSITIVE_PATHS = {
     "/api/render",
     "/api/remove-furniture",
 }
+
+
+class SceneObjectInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = None
+    furniture_id: str = Field(min_length=1)
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    scale: float = Field(default=1, ge=0.5, le=2.0)
+    rotation_deg: float = Field(default=0, ge=-180, le=180)
+    layer_order: int = Field(default=0, ge=0, le=5)
+
+
+class RemoveBoxInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x1: float = Field(ge=0, le=1)
+    y1: float = Field(ge=0, le=1)
+    x2: float = Field(ge=0, le=1)
+    y2: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_bounds(self):
+        if not (self.x1 < self.x2 and self.y1 < self.y2):
+            raise ValueError("remove_box must satisfy x1 < x2 and y1 < y2")
+        if (self.x2 - self.x1) < 0.01 or (self.y2 - self.y1) < 0.01:
+            raise ValueError("remove_box is too small")
+        return self
+
+
+class FurnitureItemResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    name: str
+    category: str
+    asset_file: str
+    prompt: str
+    asset_url: str
+
+
+class FurnitureListResponse(BaseModel):
+    items: list[FurnitureItemResponse]
+
+
+class FurnitureUploadResponse(BaseModel):
+    item: FurnitureItemResponse
+
+
+class HealthResponse(BaseModel):
+    ok: bool
+    provider: str
+    openai_configured: bool
+
+
+class RemoveFurnitureResponse(BaseModel):
+    result_image_url: str
+    provider: str
+
+
+class RenderQueuedResponse(BaseModel):
+    job_id: str
+    status: str = "queued"
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    progress: int = Field(ge=0, le=100)
+    message: str = ""
+    provider: str
+    result_image_url: str = ""
+    error: str = ""
+    created_at: float | None = None
+    updated_at: float | None = None
+    scene_count: int = 0
+
+
+def _validation_error_response(exc: ValidationError, prefix: str):
+    first = (exc.errors() or [{}])[0]
+    loc = ".".join(str(x) for x in first.get("loc", [])) or "payload"
+    msg = first.get("msg") or "invalid data"
+    return jsonify({"error": f"{prefix}.{loc}: {msg}"}), 400
+
+
+def _parse_scene_objects_from_request(scene_objects_raw: str, form_data):
+    if scene_objects_raw:
+        try:
+            parsed = json.loads(scene_objects_raw)
+        except json.JSONDecodeError:
+            return None, (jsonify({"error": "scene_objects must be valid JSON array"}), 400)
+        if not isinstance(parsed, list) or len(parsed) == 0:
+            return None, (jsonify({"error": "scene_objects must be a non-empty array"}), 400)
+        raw_items = parsed
+    else:
+        furniture_id = (form_data.get("furniture_id") or "").strip()
+        x_raw = (form_data.get("x") or "").strip()
+        y_raw = (form_data.get("y") or "").strip()
+        scale_raw = (form_data.get("scale") or "1").strip()
+        rotation_raw = (
+            (form_data.get("rotation_deg") or form_data.get("rotation") or "0").strip()
+        )
+        if not furniture_id:
+            return None, (jsonify({"error": "furniture_id is required"}), 400)
+        raw_items = [
+            {
+                "furniture_id": furniture_id,
+                "x": x_raw,
+                "y": y_raw,
+                "scale": scale_raw,
+                "rotation_deg": rotation_raw,
+            }
+        ]
+    if len(raw_items) > 6:
+        return None, (jsonify({"error": "scene can contain at most 6 objects"}), 400)
+    validated: list[SceneObjectInput] = []
+    for idx, raw in enumerate(raw_items):
+        if not isinstance(raw, dict):
+            return None, (jsonify({"error": f"scene_objects[{idx}] must be object"}), 400)
+        payload = dict(raw)
+        if "rotation_deg" not in payload and "rotation" in payload:
+            payload["rotation_deg"] = payload.get("rotation")
+        payload.setdefault("layer_order", idx)
+        payload.setdefault("id", f"obj-{idx}")
+        try:
+            validated.append(SceneObjectInput.model_validate(payload))
+        except ValidationError as exc:
+            return None, _validation_error_response(exc, f"scene_objects[{idx}]")
+    return validated, None
+
+
+def _parse_remove_box(remove_box_raw: str):
+    try:
+        payload = json.loads(remove_box_raw)
+    except json.JSONDecodeError:
+        return None, (jsonify({"error": "remove_box must be valid JSON object"}), 400)
+    if not isinstance(payload, dict):
+        return None, (jsonify({"error": "remove_box must be object"}), 400)
+    try:
+        box = RemoveBoxInput.model_validate(payload)
+    except ValidationError as exc:
+        return None, _validation_error_response(exc, "remove_box")
+    return (box.x1, box.y1, box.x2, box.y2), None
 
 
 def ensure_dirs() -> None:
@@ -303,6 +448,19 @@ def _validate_uploaded_image(upload_file, field_name: str):
         except Exception:
             pass
     return None
+
+
+def _scene_object_to_runtime(item: SceneObjectInput, furniture: dict, fallback_idx: int) -> dict:
+    return {
+        "id": item.id or f"obj-{fallback_idx}",
+        "furniture_id": item.furniture_id,
+        "furniture": furniture,
+        "x": float(item.x),
+        "y": float(item.y),
+        "scale": float(item.scale),
+        "rotation_deg": float(item.rotation_deg),
+        "layer_order": int(item.layer_order),
+    }
 
 
 def _has_meaningful_alpha(image: Image.Image) -> bool:
@@ -1115,8 +1273,8 @@ def index():
 
 @app.route("/api/furniture", methods=["GET"])
 def api_furniture():
-    items = [serialize_furniture_item(item) for item in load_catalog()]
-    return jsonify({"items": items})
+    items = [FurnitureItemResponse.model_validate(serialize_furniture_item(item)).model_dump() for item in load_catalog()]
+    return jsonify(FurnitureListResponse(items=items).model_dump())
 
 
 @app.route("/api/furniture/upload", methods=["POST"])
@@ -1154,7 +1312,8 @@ def api_upload_furniture():
     save_catalog(items)
     rebuild_furniture_pack()
 
-    return jsonify({"item": item})
+    item_response = FurnitureItemResponse.model_validate(serialize_furniture_item(item)).model_dump()
+    return jsonify(FurnitureUploadResponse(item=item_response).model_dump())
 
 
 @app.route("/api/health", methods=["GET"])
@@ -1181,28 +1340,14 @@ def api_remove_furniture():
     if not remove_box_raw and not remove_mask_file:
         return jsonify({"error": "remove_box or remove_mask is required"}), 400
 
-    remove_box: tuple[float, float, float, float] | None = None
-    if remove_box_raw:
-        try:
-            remove_box_payload = json.loads(remove_box_raw)
-        except json.JSONDecodeError:
-            return jsonify({"error": "remove_box must be valid JSON object"}), 400
-        if not isinstance(remove_box_payload, dict):
-            return jsonify({"error": "remove_box must be object"}), 400
-
-        try:
-            x1 = float(remove_box_payload.get("x1"))
-            y1 = float(remove_box_payload.get("y1"))
-            x2 = float(remove_box_payload.get("x2"))
-            y2 = float(remove_box_payload.get("y2"))
-        except (TypeError, ValueError):
-            return jsonify({"error": "remove_box x1,y1,x2,y2 must be numbers"}), 400
-
-        if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1):
-            return jsonify({"error": "remove_box coordinates must satisfy 0<=x1<x2<=1 and 0<=y1<y2<=1"}), 400
-        if (x2 - x1) < 0.01 or (y2 - y1) < 0.01:
-            return jsonify({"error": "remove_box is too small"}), 400
-        remove_box = (x1, y1, x2, y2)
+    remove_box_model, remove_box_error = _parse_remove_box(remove_box_raw)
+    if remove_box_error:
+        return remove_box_error
+    remove_box = (
+        (remove_box_model.x1, remove_box_model.y1, remove_box_model.x2, remove_box_model.y2)
+        if remove_box_model
+        else None
+    )
 
     remove_mask_bytes: bytes | None = None
     if remove_mask_file and remove_mask_file.filename:
@@ -1251,10 +1396,10 @@ def api_remove_furniture():
             return jsonify({"error": f"Remove furniture failed: {exc}"}), 500
 
     return jsonify(
-        {
-            "result_image_url": f"/generated/{output_name}",
-            "provider": provider,
-        }
+        RemoveFurnitureResponse(
+            result_image_url=f"/generated/{output_name}",
+            provider=provider,
+        ).model_dump()
     )
 
 
@@ -1262,95 +1407,38 @@ def api_remove_furniture():
 def api_render():
     ensure_dirs()
     room_file = request.files.get("room_image")
-    scene_objects_raw = (request.form.get("scene_objects") or "").strip()
 
     room_validation = _validate_uploaded_image(room_file, "room_image")
     if room_validation is not None:
         return room_validation
 
-    scene_objects_input: list[dict]
-    if scene_objects_raw:
-        try:
-            parsed = json.loads(scene_objects_raw)
-        except json.JSONDecodeError:
-            return jsonify({"error": "scene_objects must be valid JSON array"}), 400
-        if not isinstance(parsed, list) or len(parsed) == 0:
-            return jsonify({"error": "scene_objects must be a non-empty array"}), 400
-        scene_objects_input = parsed
-    else:
-        # Backward-compatible single-object format.
-        furniture_id = (request.form.get("furniture_id") or "").strip()
-        x_raw = (request.form.get("x") or "").strip()
-        y_raw = (request.form.get("y") or "").strip()
-        scale_raw = (request.form.get("scale") or "1").strip()
-        rotation_raw = (
-            (request.form.get("rotation_deg") or request.form.get("rotation") or "0").strip()
-        )
-        if not furniture_id:
-            return jsonify({"error": "furniture_id is required"}), 400
-        scene_objects_input = [
-            {
-                "furniture_id": furniture_id,
-                "x": x_raw,
-                "y": y_raw,
-                "scale": scale_raw,
-                "rotation_deg": rotation_raw,
-            }
-        ]
-
-    if len(scene_objects_input) > 6:
-        return jsonify({"error": "scene can contain at most 6 objects"}), 400
+    scene_object_models, parse_error = _parse_scene_objects_from_request(
+        (request.form.get("scene_objects") or "").strip(),
+        request.form,
+    )
+    if parse_error:
+        return parse_error
+    if not scene_object_models:
+        return jsonify({"error": "scene_objects must be a non-empty array"}), 400
 
     catalog_map = get_catalog_map()
     scene_objects: list[dict] = []
-    for idx, raw_obj in enumerate(scene_objects_input):
-        if not isinstance(raw_obj, dict):
-            return jsonify({"error": f"scene_objects[{idx}] must be object"}), 400
-
-        furniture_id = str(raw_obj.get("furniture_id") or "").strip()
-        if not furniture_id:
-            return jsonify({"error": f"scene_objects[{idx}].furniture_id is required"}), 400
-
+    for idx, obj in enumerate(scene_object_models):
+        furniture_id = obj.furniture_id
         furniture = catalog_map.get(furniture_id)
         if not furniture:
             return jsonify({"error": f"Unknown furniture_id at scene_objects[{idx}]"}), 400
 
-        try:
-            x = float(raw_obj.get("x"))
-            y = float(raw_obj.get("y"))
-            scale = float(raw_obj.get("scale", 1))
-            rotation_deg = float(raw_obj.get("rotation_deg", raw_obj.get("rotation", 0)))
-            layer_order = int(raw_obj.get("layer_order", idx))
-        except (TypeError, ValueError):
-            return jsonify(
-                {
-                    "error": f"scene_objects[{idx}] x, y, scale, rotation_deg must be numbers"
-                }
-            ), 400
-
-        if x < 0 or x > 1 or y < 0 or y > 1:
-            return jsonify({"error": f"scene_objects[{idx}] x and y must be in range 0..1"}), 400
-        if scale < 0.5 or scale > 2.0:
-            return jsonify({"error": f"scene_objects[{idx}] scale must be in range 0.5..2.0"}), 400
-        if rotation_deg < -180 or rotation_deg > 180:
-            return jsonify(
-                {"error": f"scene_objects[{idx}] rotation_deg must be in range -180..180"}
-            ), 400
-        if layer_order < 0 or layer_order > 5:
-            return jsonify(
-                {"error": f"scene_objects[{idx}] layer_order must be in range 0..5"}
-            ), 400
-
         scene_objects.append(
             {
-                "id": raw_obj.get("id", f"obj-{idx}"),
+                "id": obj.id or f"obj-{idx}",
                 "furniture_id": furniture_id,
                 "furniture": furniture,
-                "x": x,
-                "y": y,
-                "scale": scale,
-                "rotation_deg": rotation_deg,
-                "layer_order": layer_order,
+                "x": obj.x,
+                "y": obj.y,
+                "scale": obj.scale,
+                "rotation_deg": obj.rotation_deg,
+                "layer_order": obj.layer_order,
             }
         )
 
@@ -1363,7 +1451,7 @@ def api_render():
     with JOBS_LOCK:
         RENDER_JOBS[job_id] = job
     RENDER_QUEUE.put((job_id, upload_path, scene_objects))
-    return jsonify({"job_id": job_id, "status": "queued"}), 202
+    return jsonify(RenderQueuedResponse(job_id=job_id, status="queued").model_dump()), 202
 
 
 @app.route("/generated/<path:filename>")
@@ -1377,20 +1465,19 @@ def api_job_status(job_id: str):
         job = RENDER_JOBS.get(job_id)
         if not job:
             return jsonify({"error": "job not found"}), 404
-        return jsonify(
-            {
-                "job_id": job.get("id"),
-                "status": job.get("status"),
-                "progress": int(job.get("progress", 0)),
-                "message": job.get("message", ""),
-                "provider": job.get("provider", GENERATION_PROVIDER),
-                "result_image_url": job.get("result_image_url", ""),
-                "error": job.get("error", ""),
-                "created_at": job.get("created_at"),
-                "updated_at": job.get("updated_at"),
-                "scene_count": job.get("scene_count", 0),
-            }
+        payload = JobStatusResponse(
+            job_id=str(job.get("id", "")),
+            status=str(job.get("status", "")),
+            progress=int(job.get("progress", 0)),
+            message=str(job.get("message", "")),
+            provider=str(job.get("provider", GENERATION_PROVIDER)),
+            result_image_url=str(job.get("result_image_url", "")),
+            error=str(job.get("error", "")),
+            created_at=float(job.get("created_at", 0)),
+            updated_at=float(job.get("updated_at", 0)),
+            scene_count=int(job.get("scene_count", 0)),
         )
+        return jsonify(payload.model_dump())
 
 
 @app.route("/assets/furniture/<path:filename>")
