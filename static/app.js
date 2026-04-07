@@ -1368,7 +1368,7 @@ function sendRenderRequest(formData) {
       clearRenderProgressTimer();
       const payload = xhr.response || {};
       if (xhr.status >= 200 && xhr.status < 300) {
-        setRenderProgress(100, "Готово! Финальное изображение получено.");
+        setRenderProgress(Math.max(renderProgressValue, 50), "Задача поставлена в очередь...");
         resolve(payload);
         return;
       }
@@ -1378,6 +1378,42 @@ function sendRenderRequest(formData) {
     xhr.addEventListener("abort", () => reject(new Error("Запрос к нейросети был прерван")));
     xhr.send(formData);
   });
+}
+
+function fetchRenderJob(jobId) {
+  return fetch(`/api/jobs/${encodeURIComponent(jobId)}`).then(async (response) => {
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
+    if (!response.ok) {
+      throw new Error(payload?.error || "Не удалось получить статус задачи");
+    }
+    return payload;
+  });
+}
+
+async function waitForRenderJob(jobId) {
+  const startedAt = Date.now();
+  while (true) {
+    const job = await fetchRenderJob(jobId);
+    const pct = clamp(Number(job.progress || 0), 0, 100);
+    const label = job.message || "Нейросеть обрабатывает изображение...";
+    setRenderProgress(pct, label);
+    if (job.status === "done") {
+      if (!job.result_image_url) throw new Error("Задача завершена без result_image_url");
+      return job;
+    }
+    if (job.status === "error") {
+      throw new Error(job.error || "Ошибка генерации");
+    }
+    if (Date.now() - startedAt > 20 * 60 * 1000) {
+      throw new Error("Таймаут ожидания задачи генерации");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 700));
+  }
 }
 
 function sendRemoveRequest(formData) {
@@ -1692,7 +1728,9 @@ async function handleRender() {
   formData.append("room_image", selectedRoomFile);
   formData.append("scene_objects", JSON.stringify(payloadSceneObjects));
   try {
-    const data = await sendRenderRequest(formData);
+    const queued = await sendRenderRequest(formData);
+    if (!queued?.job_id) throw new Error("Сервер не вернул job_id");
+    const data = await waitForRenderJob(queued.job_id);
     resultImage.src = data.result_image_url;
     downloadLink.href = data.result_image_url;
     downloadLink.setAttribute("download", `result-${Date.now()}.jpg`);

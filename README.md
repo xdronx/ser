@@ -81,7 +81,30 @@ OPENAI_IMAGE_QUALITY=
 OPENAI_TIMEOUT_SEC=120
 OPENAI_REFINE_PROMPT=Blend the furniture naturally into the room. Preserve geometry and placement. Keep realistic contact shadows on the floor and match lighting and color tone.
 OPENAI_NEGATIVE_PROMPT=blurry, low quality, different room, changed walls, changed floor, extra objects, wrong perspective, odd lighting, 3d render, cartoon, changed furniture
+FILE_TTL_HOURS=48
+CLEANUP_INTERVAL_SEC=900
+JOB_RETENTION_HOURS=24
 ```
+
+### Что означают новые параметры
+
+- `FILE_TTL_HOURS` — через сколько часов удалять старые файлы из `uploads/` и `generated/`.
+- `CLEANUP_INTERVAL_SEC` — как часто запускать очистку (в секундах).
+- `JOB_RETENTION_HOURS` — сколько хранить статусы задач `/api/jobs/<job_id>` в памяти.
+
+### Асинхронная генерация (очередь задач)
+
+Теперь генерация работает через очередь:
+
+1. `POST /api/render` возвращает `202 Accepted` и `job_id`.
+2. Клиент опрашивает `GET /api/jobs/<job_id>`.
+3. Когда статус `done`, в ответе появляется `result_image_url`.
+
+Статусы задачи:
+- `queued`
+- `running`
+- `done`
+- `error`
 
 ---
 
@@ -205,6 +228,9 @@ OPENAI_IMAGE_QUALITY=
 OPENAI_TIMEOUT_SEC=120
 OPENAI_REFINE_PROMPT=Blend the furniture naturally into the room. Preserve geometry and placement. Keep realistic contact shadows on the floor and match lighting and color tone.
 OPENAI_NEGATIVE_PROMPT=blurry, low quality, different room, changed walls, changed floor, extra objects, wrong perspective, odd lighting, 3d render, cartoon, changed furniture
+FILE_TTL_HOURS=48
+CLEANUP_INTERVAL_SEC=900
+JOB_RETENTION_HOURS=24
 ```
 
 3. Перезапусти сервер:

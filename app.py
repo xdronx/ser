@@ -3,7 +3,10 @@ import io
 import json
 import os
 import re
+import threading
+import time
 import uuid
+from queue import Queue
 from pathlib import Path
 
 import requests
@@ -82,6 +85,18 @@ except ValueError:
 AUTO_REMOVE_FURNITURE_BG = (
     os.getenv("AUTO_REMOVE_FURNITURE_BG", "true").strip().lower() not in {"0", "false", "no"}
 )
+try:
+    FILE_TTL_HOURS = int((os.getenv("FILE_TTL_HOURS", "48") or "48").strip())
+except ValueError:
+    FILE_TTL_HOURS = 48
+try:
+    CLEANUP_INTERVAL_SEC = int((os.getenv("CLEANUP_INTERVAL_SEC", "900") or "900").strip())
+except ValueError:
+    CLEANUP_INTERVAL_SEC = 900
+try:
+    JOB_RETENTION_HOURS = int((os.getenv("JOB_RETENTION_HOURS", "24") or "24").strip())
+except ValueError:
+    JOB_RETENTION_HOURS = 24
 
 
 def ensure_dirs() -> None:
@@ -792,6 +807,145 @@ def call_external_webhook(
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
 
+JOBS_LOCK = threading.Lock()
+RENDER_JOBS: dict[str, dict] = {}
+RENDER_QUEUE: Queue = Queue()
+
+
+def _now_ts() -> float:
+    return time.time()
+
+
+def _new_job(scene_count: int) -> tuple[str, dict]:
+    job_id = f"job-{uuid.uuid4().hex}"
+    created_at = _now_ts()
+    job = {
+        "id": job_id,
+        "status": "queued",  # queued | running | done | error
+        "progress": 2,
+        "message": "Задача поставлена в очередь",
+        "provider": GENERATION_PROVIDER,
+        "result_image_url": "",
+        "error": "",
+        "created_at": created_at,
+        "updated_at": created_at,
+        "scene_count": int(scene_count),
+    }
+    return job_id, job
+
+
+def _update_job(job_id: str, **fields) -> None:
+    with JOBS_LOCK:
+        job = RENDER_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(fields)
+        job["updated_at"] = _now_ts()
+
+
+def _cleanup_expired_files() -> None:
+    ttl_sec = max(1, FILE_TTL_HOURS) * 3600
+    cutoff = _now_ts() - ttl_sec
+    for folder in (UPLOADS_DIR, GENERATED_DIR):
+        if not folder.exists():
+            continue
+        for path in folder.iterdir():
+            if not path.is_file():
+                continue
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            except Exception:
+                continue
+
+
+def _cleanup_old_jobs() -> None:
+    cutoff = _now_ts() - max(1, JOB_RETENTION_HOURS) * 3600
+    with JOBS_LOCK:
+        expired = [job_id for job_id, job in RENDER_JOBS.items() if float(job.get("updated_at", 0)) < cutoff]
+        for job_id in expired:
+            RENDER_JOBS.pop(job_id, None)
+
+
+def _cleanup_loop() -> None:
+    while True:
+        try:
+            _cleanup_expired_files()
+            _cleanup_old_jobs()
+        except Exception:
+            pass
+        time.sleep(max(60, CLEANUP_INTERVAL_SEC))
+
+
+def _run_generation(upload_path: Path, scene_objects: list[dict]) -> str:
+    if GENERATION_PROVIDER == "webhook":
+        return call_external_webhook(upload_path, scene_objects)
+    if GENERATION_PROVIDER == "openai":
+        return call_openai_image_edit(upload_path, scene_objects)
+    return draw_mock_result(upload_path, scene_objects)
+
+
+def _render_worker_loop() -> None:
+    while True:
+        job_id, upload_path, scene_objects = RENDER_QUEUE.get()
+        try:
+            _update_job(job_id, status="running", progress=15, message="Подготовка данных для генерации")
+            _update_job(job_id, progress=35, message="Нейросеть обрабатывает изображение")
+            output_name = _run_generation(upload_path, scene_objects)
+            _update_job(
+                job_id,
+                status="done",
+                progress=100,
+                message="Готово",
+                result_image_url=f"/generated/{output_name}",
+                provider=GENERATION_PROVIDER,
+            )
+        except Exception as exc:
+            _update_job(
+                job_id,
+                status="error",
+                progress=100,
+                message="Ошибка генерации",
+                error=str(exc),
+            )
+        finally:
+            RENDER_QUEUE.task_done()
+
+
+BACKGROUND_WORKERS_LOCK = threading.Lock()
+BACKGROUND_WORKERS_STARTED = False
+
+
+def _start_background_workers() -> None:
+    global BACKGROUND_WORKERS_STARTED
+    with BACKGROUND_WORKERS_LOCK:
+        if BACKGROUND_WORKERS_STARTED:
+            return
+        render_worker = threading.Thread(target=_render_worker_loop, daemon=True, name="render-worker")
+        cleanup_worker = threading.Thread(target=_cleanup_loop, daemon=True, name="cleanup-worker")
+        render_worker.start()
+        cleanup_worker.start()
+        BACKGROUND_WORKERS_STARTED = True
+
+
+def _job_payload(job: dict) -> dict:
+    return {
+        "job_id": job["id"],
+        "status": job["status"],
+        "progress": int(job.get("progress", 0)),
+        "message": job.get("message", ""),
+        "provider": job.get("provider") or GENERATION_PROVIDER,
+        "result_image_url": job.get("result_image_url", ""),
+        "error": job.get("error", ""),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+    }
+
+
+@app.before_request
+def _ensure_background_workers_started():
+    _start_background_workers()
+
 
 @app.route("/")
 def index():
@@ -1044,27 +1198,38 @@ def api_render():
     upload_path = UPLOADS_DIR / upload_name
     room_file.save(upload_path)
 
-    try:
-        if GENERATION_PROVIDER == "webhook":
-            output_name = call_external_webhook(upload_path, scene_objects)
-        elif GENERATION_PROVIDER == "openai":
-            output_name = call_openai_image_edit(upload_path, scene_objects)
-        else:
-            output_name = draw_mock_result(upload_path, scene_objects)
-    except Exception as exc:
-        return jsonify({"error": f"Generation failed: {exc}"}), 500
-
-    return jsonify(
-        {
-            "result_image_url": f"/generated/{output_name}",
-            "provider": GENERATION_PROVIDER,
-        }
-    )
+    job_id, job = _new_job(len(scene_objects))
+    with JOBS_LOCK:
+        RENDER_JOBS[job_id] = job
+    RENDER_QUEUE.put((job_id, upload_path, scene_objects))
+    return jsonify({"job_id": job_id, "status": "queued"}), 202
 
 
 @app.route("/generated/<path:filename>")
 def generated_file(filename: str):
     return send_from_directory(GENERATED_DIR, filename)
+
+
+@app.route("/api/jobs/<job_id>", methods=["GET"])
+def api_job_status(job_id: str):
+    with JOBS_LOCK:
+        job = RENDER_JOBS.get(job_id)
+        if not job:
+            return jsonify({"error": "job not found"}), 404
+        return jsonify(
+            {
+                "job_id": job.get("id"),
+                "status": job.get("status"),
+                "progress": int(job.get("progress", 0)),
+                "message": job.get("message", ""),
+                "provider": job.get("provider", GENERATION_PROVIDER),
+                "result_image_url": job.get("result_image_url", ""),
+                "error": job.get("error", ""),
+                "created_at": job.get("created_at"),
+                "updated_at": job.get("updated_at"),
+                "scene_count": job.get("scene_count", 0),
+            }
+        )
 
 
 @app.route("/assets/furniture/<path:filename>")
@@ -1074,4 +1239,7 @@ def furniture_asset_file(filename: str):
 
 if __name__ == "__main__":
     ensure_dirs()
+    _cleanup_expired_files()
+    threading.Thread(target=_render_worker_loop, daemon=True, name="render-worker").start()
+    threading.Thread(target=_cleanup_loop, daemon=True, name="files-cleanup-worker").start()
     app.run(host="0.0.0.0", port=5000, debug=True)
