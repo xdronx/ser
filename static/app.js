@@ -114,12 +114,14 @@ let beforeImageUrl = "";
 let afterImageUrl = "";
 let autosaveTimer = null;
 let autosaveInFlight = false;
-let lastAutoSavedSignature = "";
+let lastAutoSavedVersion = -1;
+let projectStateVersion = 0;
 let cachedAutoSaveRoomDataUrl = "";
 let cachedAutoSaveRoomSignature = "";
 let maskVersion = 0;
 let maskNeedsRecount = false;
 let isProjectDirty = false;
+let suppressProjectDirtySideEffects = false;
 
 const ratioCache = new Map();
 const historyPast = [];
@@ -289,6 +291,7 @@ function updateSaveStateIndicator() {
 
 function setProjectDirty(nextDirty) {
   const next = Boolean(nextDirty);
+  if (next && !suppressProjectDirtySideEffects) projectStateVersion += 1;
   if (next === isProjectDirty) return;
   isProjectDirty = next;
   updateSaveStateIndicator();
@@ -552,21 +555,6 @@ function getRoomFileSignature(file) {
   return `${file.name}|${file.size}|${file.type}|${file.lastModified}`;
 }
 
-function getAutoSaveStateSignature(roomSignature) {
-  return JSON.stringify({
-    roomSignature,
-    sceneObjects,
-    activeSceneObjectId,
-    manualLayerOrdering,
-    selectedFurnitureId,
-    selectedCategory,
-    searchQuery,
-    removeModeTool,
-    maskDirty,
-    maskVersion,
-  });
-}
-
 async function compressRoomImageFile(file) {
   if (!file.type.startsWith("image/")) {
     throw new Error("Можно загрузить только изображение");
@@ -610,8 +598,7 @@ async function compressRoomImageFile(file) {
 async function persistAutoSavedProject() {
   if (!selectedRoomFile || isRendering || autosaveInFlight) return;
   const roomSignature = getRoomFileSignature(selectedRoomFile);
-  const nextSignature = getAutoSaveStateSignature(roomSignature);
-  if (nextSignature === lastAutoSavedSignature) return;
+  if (projectStateVersion === lastAutoSavedVersion && cachedAutoSaveRoomSignature === roomSignature) return;
   autosaveInFlight = true;
   try {
     if (!cachedAutoSaveRoomDataUrl || cachedAutoSaveRoomSignature !== roomSignature) {
@@ -620,7 +607,7 @@ async function persistAutoSavedProject() {
     }
     const payload = getCurrentProjectPayload(cachedAutoSaveRoomDataUrl);
     localStorage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(payload));
-    lastAutoSavedSignature = nextSignature;
+    lastAutoSavedVersion = projectStateVersion;
   } catch (error) {
     console.warn("Autosave skipped:", error);
   } finally {
@@ -1244,6 +1231,8 @@ function setRemoveMode(next) {
   isRemoveMode = Boolean(next);
   updateModeUI();
   const prevDirty = isProjectDirty;
+  const prevSuppress = suppressProjectDirtySideEffects;
+  suppressProjectDirtySideEffects = true;
   if (isRemoveMode) {
     confirmRemoveBtn.hidden = false;
     cancelRemoveBtn.hidden = false;
@@ -1267,9 +1256,10 @@ function setRemoveMode(next) {
     clearMaskCanvas();
     removeMaskCanvas.hidden = true;
   }
+  suppressProjectDirtySideEffects = prevSuppress;
   updateRemoveToolButtons();
   updateRemoveButtonsState();
-  if (!next && prevDirty !== isProjectDirty) setProjectDirty(prevDirty);
+  setProjectDirty(prevDirty);
   updateCursorHintVisibility(!cursorHint.hidden);
 }
 
@@ -1324,7 +1314,7 @@ function recomputeMaskDirtyFromCanvas() {
 }
 
 function markStateDirty() {
-  lastAutoSavedSignature = "";
+  setProjectDirty(true);
 }
 
 function paintMaskLine(from, to, erase = false) {
