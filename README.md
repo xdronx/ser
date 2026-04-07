@@ -84,6 +84,10 @@ OPENAI_NEGATIVE_PROMPT=blurry, low quality, different room, changed walls, chang
 FILE_TTL_HOURS=48
 CLEANUP_INTERVAL_SEC=900
 JOB_RETENTION_HOURS=24
+API_AUTH_TOKEN=
+MAX_UPLOAD_MB=20
+RATE_LIMIT_WINDOW_SEC=60
+API_RATE_LIMIT_PER_MINUTE=30
 ```
 
 ### Что означают новые параметры
@@ -91,6 +95,10 @@ JOB_RETENTION_HOURS=24
 - `FILE_TTL_HOURS` — через сколько часов удалять старые файлы из `uploads/` и `generated/`.
 - `CLEANUP_INTERVAL_SEC` — как часто запускать очистку (в секундах).
 - `JOB_RETENTION_HOURS` — сколько хранить статусы задач `/api/jobs/<job_id>` в памяти.
+- `API_AUTH_TOKEN` — токен для защиты `upload/render/remove`.
+- `MAX_UPLOAD_MB` — глобальный лимит размера запроса на upload.
+- `RATE_LIMIT_WINDOW_SEC` — окно rate-limit (секунды).
+- `API_RATE_LIMIT_PER_MINUTE` — лимит API-запросов за окно на IP + endpoint.
 
 ### Асинхронная генерация (очередь задач)
 
@@ -231,6 +239,10 @@ OPENAI_NEGATIVE_PROMPT=blurry, low quality, different room, changed walls, chang
 FILE_TTL_HOURS=48
 CLEANUP_INTERVAL_SEC=900
 JOB_RETENTION_HOURS=24
+API_AUTH_TOKEN=
+MAX_UPLOAD_MB=20
+RATE_LIMIT_WINDOW_SEC=60
+API_RATE_LIMIT_PER_MINUTE=30
 ```
 
 3. Перезапусти сервер:

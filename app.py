@@ -1,4 +1,5 @@
 import base64
+import hmac
 import io
 import json
 import os
@@ -13,6 +14,7 @@ import requests
 from flask import Flask, jsonify, request, send_from_directory
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from dotenv import load_dotenv
+from werkzeug.exceptions import RequestEntityTooLarge
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -97,6 +99,43 @@ try:
     JOB_RETENTION_HOURS = int((os.getenv("JOB_RETENTION_HOURS", "24") or "24").strip())
 except ValueError:
     JOB_RETENTION_HOURS = 24
+try:
+    MAX_UPLOAD_MB = int((os.getenv("MAX_UPLOAD_MB", "25") or "25").strip())
+except ValueError:
+    MAX_UPLOAD_MB = 25
+try:
+    RATE_LIMIT_WINDOW_SEC = int((os.getenv("RATE_LIMIT_WINDOW_SEC", "60") or "60").strip())
+except ValueError:
+    RATE_LIMIT_WINDOW_SEC = 60
+try:
+    RATE_LIMIT_MAX_REQUESTS = int(
+        (
+            os.getenv(
+                "API_RATE_LIMIT_PER_MINUTE",
+                os.getenv(
+                    "RATE_LIMIT_PER_MIN",
+                    os.getenv("RATE_LIMIT_MAX_REQUESTS", "240"),
+                ),
+            )
+            or "240"
+        ).strip()
+    )
+except ValueError:
+    RATE_LIMIT_MAX_REQUESTS = 240
+API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
+API_AUTH_HEADER = "X-API-Token"
+MAX_UPLOAD_BYTES = max(1, MAX_UPLOAD_MB) * 1024 * 1024
+ALLOWED_IMAGE_MIME = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "application/octet-stream",
+}
+SENSITIVE_PATHS = {
+    "/api/furniture/upload",
+    "/api/render",
+    "/api/remove-furniture",
+}
 
 
 def ensure_dirs() -> None:
@@ -167,6 +206,103 @@ def serialize_furniture_item(item: dict) -> dict:
 def allowed_image(filename: str) -> bool:
     ext = Path(filename).suffix.lower()
     return ext in {".jpg", ".jpeg", ".png", ".webp"}
+
+
+RATE_LIMIT_LOCK = threading.Lock()
+RATE_LIMIT_BUCKETS: dict[str, tuple[float, int]] = {}
+
+
+def _client_ip() -> str:
+    forwarded_for = (request.headers.get("X-Forwarded-For") or "").strip()
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip() or "unknown"
+    return request.remote_addr or "unknown"
+
+
+def _rate_limit_key() -> str:
+    return f"{_client_ip()}:{request.path}"
+
+
+def _apply_rate_limit():
+    if not request.path.startswith("/api/"):
+        return None
+    now = time.time()
+    key = _rate_limit_key()
+    window = max(1, RATE_LIMIT_WINDOW_SEC)
+    limit = max(1, RATE_LIMIT_MAX_REQUESTS)
+    with RATE_LIMIT_LOCK:
+        start_ts, count = RATE_LIMIT_BUCKETS.get(key, (now, 0))
+        if (now - start_ts) >= window:
+            start_ts, count = now, 0
+        count += 1
+        RATE_LIMIT_BUCKETS[key] = (start_ts, count)
+        # opportunistic cleanup of stale buckets
+        if len(RATE_LIMIT_BUCKETS) > 5000:
+            stale_before = now - (window * 2)
+            for bucket_key, (bucket_start, _) in list(RATE_LIMIT_BUCKETS.items()):
+                if bucket_start < stale_before:
+                    RATE_LIMIT_BUCKETS.pop(bucket_key, None)
+    if count > limit:
+        return jsonify(
+            {
+                "error": "Too many requests",
+                "code": "rate_limited",
+                "limit": limit,
+                "window_sec": window,
+            }
+        ), 429
+    return None
+
+
+def _extract_request_token() -> str:
+    bearer = (request.headers.get("Authorization") or "").strip()
+    if bearer.lower().startswith("bearer "):
+        return bearer[7:].strip()
+    return (request.headers.get(API_AUTH_HEADER) or "").strip()
+
+
+def _check_auth():
+    if not API_AUTH_TOKEN:
+        return None
+    if request.path not in SENSITIVE_PATHS:
+        return None
+    token = _extract_request_token()
+    if token and hmac.compare_digest(token, API_AUTH_TOKEN):
+        return None
+    return jsonify({"error": "Unauthorized", "code": "unauthorized"}), 401
+
+
+def _validate_uploaded_image(upload_file, field_name: str):
+    if not upload_file or not upload_file.filename:
+        return jsonify({"error": f"{field_name} file is required"}), 400
+    if not allowed_image(upload_file.filename):
+        return jsonify({"error": "Only jpg, jpeg, png, webp are allowed"}), 400
+    mime = str(upload_file.mimetype or upload_file.content_type or "").lower().split(";")[0]
+    if mime and mime not in ALLOWED_IMAGE_MIME:
+        return jsonify({"error": f"{field_name} has unsupported mime type: {mime}"}), 400
+    try:
+        pos = upload_file.stream.tell()
+    except Exception:
+        pos = None
+    try:
+        data = upload_file.read()
+        if not data:
+            return jsonify({"error": f"{field_name} is empty"}), 400
+        if len(data) > MAX_UPLOAD_BYTES:
+            return jsonify({"error": f"{field_name} exceeds {MAX_UPLOAD_MB}MB limit"}), 413
+        img = Image.open(io.BytesIO(data))
+        img.verify()
+    except Exception:
+        return jsonify({"error": f"{field_name} is not a valid image"}), 400
+    finally:
+        try:
+            if pos is not None:
+                upload_file.stream.seek(pos)
+            else:
+                upload_file.stream.seek(0)
+        except Exception:
+            pass
+    return None
 
 
 def _has_meaningful_alpha(image: Image.Image) -> bool:
@@ -806,6 +942,7 @@ def call_external_webhook(
 
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 JOBS_LOCK = threading.Lock()
 RENDER_JOBS: dict[str, dict] = {}
@@ -947,6 +1084,30 @@ def _ensure_background_workers_started():
     _start_background_workers()
 
 
+@app.before_request
+def _before_request_security():
+    rate_limit_result = _apply_rate_limit()
+    if rate_limit_result:
+        return rate_limit_result
+    auth_result = _check_auth()
+    if auth_result:
+        return auth_result
+
+
+@app.errorhandler(RequestEntityTooLarge)
+@app.errorhandler(413)
+def _handle_request_too_large(_error):
+    return (
+        jsonify(
+            {
+                "error": f"Request too large. Max allowed is {MAX_UPLOAD_MB}MB",
+                "code": "request_too_large",
+            }
+        ),
+        413,
+    )
+
+
 @app.route("/")
 def index():
     return send_from_directory(STATIC_DIR, "index.html")
@@ -969,10 +1130,9 @@ def api_upload_furniture():
 
     if not name:
         return jsonify({"error": "name is required"}), 400
-    if not image_file or not image_file.filename:
-        return jsonify({"error": "furniture_image file is required"}), 400
-    if not allowed_image(image_file.filename):
-        return jsonify({"error": "Only jpg, jpeg, png, webp are allowed"}), 400
+    image_validation = _validate_uploaded_image(image_file, "furniture_image")
+    if image_validation is not None:
+        return image_validation
 
     name_slug = make_slug(name)
     item_id = f"{name_slug}-{uuid.uuid4().hex[:8]}"
@@ -1015,10 +1175,9 @@ def api_remove_furniture():
     remove_box_raw = (request.form.get("remove_box") or "").strip()
     remove_mask_file = request.files.get("remove_mask")
 
-    if not room_file or not room_file.filename:
-        return jsonify({"error": "room_image file is required"}), 400
-    if not allowed_image(room_file.filename):
-        return jsonify({"error": "Only jpg, jpeg, png, webp are allowed"}), 400
+    room_validation = _validate_uploaded_image(room_file, "room_image")
+    if room_validation is not None:
+        return room_validation
     if not remove_box_raw and not remove_mask_file:
         return jsonify({"error": "remove_box or remove_mask is required"}), 400
 
@@ -1047,6 +1206,9 @@ def api_remove_furniture():
 
     remove_mask_bytes: bytes | None = None
     if remove_mask_file and remove_mask_file.filename:
+        mask_validation = _validate_uploaded_image(remove_mask_file, "remove_mask")
+        if mask_validation is not None:
+            return mask_validation
         try:
             remove_mask_bytes = remove_mask_file.read()
         except Exception:
@@ -1102,10 +1264,9 @@ def api_render():
     room_file = request.files.get("room_image")
     scene_objects_raw = (request.form.get("scene_objects") or "").strip()
 
-    if not room_file or not room_file.filename:
-        return jsonify({"error": "room_image file is required"}), 400
-    if not allowed_image(room_file.filename):
-        return jsonify({"error": "Only jpg, jpeg, png, webp are allowed"}), 400
+    room_validation = _validate_uploaded_image(room_file, "room_image")
+    if room_validation is not None:
+        return room_validation
 
     scene_objects_input: list[dict]
     if scene_objects_raw:
