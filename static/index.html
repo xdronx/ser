@@ -13,21 +13,11 @@
           <div class="brand-icon">F</div>
           <div class="brand-name">Мебель</div>
         </div>
-
-        <nav class="rail-nav">
-          <button type="button" class="rail-btn active">Мебель</button>
-          <button type="button" class="rail-btn">Стили</button>
-          <button type="button" class="rail-btn">Сцены</button>
-          <button type="button" class="rail-btn">Фото</button>
-        </nav>
-
-        <div class="rail-help">Помощь</div>
       </aside>
 
       <section class="catalog">
         <header class="catalog-head">
           <h2>Мебель</h2>
-          <p class="catalog-sub">Выбери предмет и поставь его в комнату</p>
         </header>
 
         <div class="catalog-search">
@@ -125,7 +115,6 @@
             <div class="canvas-surface">
               <img id="roomPreview" alt="Комната" />
               <img id="resultImage" alt="Результат генерации" />
-              <div id="marker" class="marker" hidden></div>
               <div id="snapGuideV" class="snap-guide snap-guide-v" hidden></div>
               <div id="snapGuideH" class="snap-guide snap-guide-h" hidden></div>
               <canvas id="removeMaskCanvas" class="remove-mask-canvas" hidden></canvas>
@@ -157,7 +146,6 @@
           <aside class="layers-panel">
             <header class="layers-head">
               <h3>Слои</h3>
-              <p>Активный слой выделен. Меняй порядок вручную.</p>
             </header>
             <div id="layersEmpty" class="layers-empty">Добавь объекты на сцену</div>
             <div id="layersList" class="layers-list"></div>

@@ -32,8 +32,9 @@ body {
 .rail {
   border-right: 1px solid var(--border);
   background: #f3f5f9;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
   padding: 14px 10px;
 }
 
@@ -60,42 +61,6 @@ body {
   font-weight: 700;
 }
 
-.rail-nav {
-  margin-top: 18px;
-  display: grid;
-  gap: 10px;
-  align-content: start;
-}
-
-.rail-btn {
-  border: 1px solid transparent;
-  border-radius: 10px;
-  min-height: 46px;
-  padding: 6px 2px;
-  background: transparent;
-  color: #4b5563;
-  font-size: 11px;
-  line-height: 1.1;
-  cursor: pointer;
-}
-
-.rail-btn:hover {
-  border-color: #d6deee;
-  background: #f8faff;
-}
-
-.rail-btn.active {
-  background: #eaf1ff;
-  border-color: #c7dafd;
-  color: #1e40af;
-}
-
-.rail-help {
-  font-size: 11px;
-  text-align: center;
-  color: var(--muted);
-}
-
 .catalog {
   border-right: 1px solid var(--border);
   background: var(--sidebar);
@@ -111,12 +76,6 @@ body {
 .catalog-head h2 {
   margin: 0;
   font-size: 24px;
-}
-
-.catalog-sub {
-  margin: 2px 0 0;
-  font-size: 13px;
-  color: var(--muted);
 }
 
 .catalog-search {
@@ -627,18 +586,6 @@ body {
   display: none;
 }
 
-.marker {
-  position: absolute;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid #fff;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-}
-
 .scene-object {
   position: absolute;
   transform: translate(-50%, -100%);
@@ -744,12 +691,6 @@ body {
 .layers-head h3 {
   margin: 0;
   font-size: 16px;
-}
-
-.layers-head p {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--muted);
 }
 
 .layers-empty {
@@ -986,26 +927,9 @@ body {
   }
 
   .rail {
-    grid-template-rows: auto;
-    grid-template-columns: auto 1fr auto;
-    align-items: center;
-    gap: 10px;
+    justify-content: flex-start;
     border-right: 0;
     border-bottom: 1px solid var(--border);
-  }
-
-  .rail-nav {
-    margin-top: 0;
-    display: flex;
-    overflow: auto;
-    gap: 8px;
-  }
-
-  .rail-btn {
-    min-height: auto;
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    background: #fff;
   }
 
   .catalog {

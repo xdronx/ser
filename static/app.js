@@ -1,7 +1,6 @@
 const roomImageInput = document.getElementById("roomImageInput");
 const roomPreview = document.getElementById("roomPreview");
 const resultImage = document.getElementById("resultImage");
-const marker = document.getElementById("marker");
 const emptyHint = document.getElementById("emptyHint");
 const coordsText = document.getElementById("coordsText");
 const statusText = document.getElementById("statusText");
@@ -1304,7 +1303,6 @@ function resetSceneState() {
   sceneObjects = [];
   activeSceneObjectId = null;
   manualLayerOrdering = false;
-  marker.hidden = true;
   hideSnapGuides();
   clearRemoveSelection();
   clearMaskCanvas();
