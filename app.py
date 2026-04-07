@@ -138,6 +138,11 @@ SENSITIVE_PATHS = {
     "/api/remove-furniture",
 }
 
+CATALOG_CACHE_LOCK = threading.Lock()
+CATALOG_CACHE_MTIME_NS: int | None = None
+CATALOG_CACHE_ITEMS: list[dict] = []
+CATALOG_CACHE_LOADED = False
+
 
 class SceneObjectInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -289,19 +294,44 @@ def ensure_dirs() -> None:
 
 
 def load_catalog() -> list[dict]:
+    global CATALOG_CACHE_LOADED, CATALOG_CACHE_MTIME_NS, CATALOG_CACHE_ITEMS
     if not CATALOG_FILE.exists():
+        with CATALOG_CACHE_LOCK:
+            CATALOG_CACHE_LOADED = True
+            CATALOG_CACHE_MTIME_NS = None
+            CATALOG_CACHE_ITEMS = []
         return []
-    with CATALOG_FILE.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    return data if isinstance(data, list) else []
+    try:
+        mtime_ns = CATALOG_FILE.stat().st_mtime_ns
+    except OSError:
+        return []
+    with CATALOG_CACHE_LOCK:
+        if CATALOG_CACHE_LOADED and CATALOG_CACHE_MTIME_NS == mtime_ns:
+            return [dict(item) for item in CATALOG_CACHE_ITEMS]
+        with CATALOG_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        items = data if isinstance(data, list) else []
+        CATALOG_CACHE_ITEMS = [dict(item) for item in items]
+        CATALOG_CACHE_MTIME_NS = mtime_ns
+        CATALOG_CACHE_LOADED = True
+        return [dict(item) for item in CATALOG_CACHE_ITEMS]
 
 
 def save_catalog(items: list[dict]) -> None:
+    global CATALOG_CACHE_LOADED, CATALOG_CACHE_MTIME_NS, CATALOG_CACHE_ITEMS
     CATALOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CATALOG_FILE.write_text(
         json.dumps(items, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    try:
+        mtime_ns = CATALOG_FILE.stat().st_mtime_ns
+    except OSError:
+        mtime_ns = None
+    with CATALOG_CACHE_LOCK:
+        CATALOG_CACHE_ITEMS = [dict(item) for item in items]
+        CATALOG_CACHE_MTIME_NS = mtime_ns
+        CATALOG_CACHE_LOADED = True
 
 
 def rebuild_furniture_pack() -> None:

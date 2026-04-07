@@ -1399,6 +1399,7 @@ function fetchRenderJob(jobId) {
 
 async function waitForRenderJob(jobId) {
   const startedAt = Date.now();
+  let pollDelayMs = 500;
   while (true) {
     const job = await fetchRenderJob(jobId);
     const pct = clamp(Number(job.progress || 0), 0, 100);
@@ -1414,7 +1415,8 @@ async function waitForRenderJob(jobId) {
     if (Date.now() - startedAt > 20 * 60 * 1000) {
       throw new Error("Таймаут ожидания задачи генерации");
     }
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    await new Promise((resolve) => setTimeout(resolve, pollDelayMs));
+    if (pollDelayMs < 1200) pollDelayMs += 100;
   }
 }
 
