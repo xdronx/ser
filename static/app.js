@@ -61,6 +61,11 @@ const SCALE_MAX = 2;
 const SNAP_THRESHOLD = 0.03;
 const BASE_OBJECT_WIDTH = 0.28;
 const MAX_HISTORY = 60;
+const MAX_INPUT_ROOM_FILE_BYTES = 25 * 1024 * 1024; // hard upload cap before compression
+const MAX_ROOM_DIMENSION_PX = 2048;
+const TARGET_ROOM_FILE_BYTES = 2_500_000;
+const AUTOSAVE_INTERVAL_MS = 25_000;
+const AUTOSAVE_STORAGE_KEY = "furniture-mvp-autosave-v1";
 
 let selectedRoomFile = null;
 let selectedRoomUrl = "";
@@ -94,6 +99,7 @@ let layerDropBefore = true;
 
 let beforeImageUrl = "";
 let afterImageUrl = "";
+let autosaveTimer = null;
 
 const ratioCache = new Map();
 const historyPast = [];
@@ -319,6 +325,152 @@ function hideCompare() {
   compareAfterImage.removeAttribute("src");
   beforeImageUrl = "";
   afterImageUrl = "";
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Не удалось прочитать файл"));
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function dataUrlToFile(dataUrl, filename = "room.jpg", mimeType = "image/jpeg") {
+  const response = await fetch(dataUrl);
+  if (!response.ok) throw new Error("Не удалось прочитать data_url изображения");
+  const blob = await response.blob();
+  return new File([blob], filename, { type: blob.type || mimeType });
+}
+
+function getCurrentProjectPayload(roomDataUrl = "") {
+  return {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    room: roomDataUrl
+      ? {
+          name: selectedRoomFile?.name || "room.jpg",
+          type: selectedRoomFile?.type || "image/jpeg",
+          data_url: roomDataUrl,
+        }
+      : null,
+    scene_objects: sceneObjects.map((obj) => ({ ...obj })),
+    active_scene_object_id: activeSceneObjectId,
+    manual_layer_ordering: manualLayerOrdering,
+    selected_furniture_id: selectedFurnitureId,
+    selected_category: selectedCategory,
+    search_query: searchQuery,
+    remove_mode_tool: removeModeTool,
+    remove_mask_data_url: maskDirty ? maskCanvasToDataUrl() : "",
+  };
+}
+
+async function compressRoomImageFile(file) {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Можно загрузить только изображение");
+  }
+  if (file.size <= TARGET_ROOM_FILE_BYTES && file.size <= MAX_INPUT_ROOM_FILE_BYTES) {
+    return file;
+  }
+
+  const dataUrl = await fileToDataUrl(file);
+  const image = await new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Не удалось прочитать изображение"));
+    img.src = dataUrl;
+  });
+
+  const longSide = Math.max(image.width, image.height);
+  const scale = longSide > MAX_ROOM_DIMENSION_PX ? MAX_ROOM_DIMENSION_PX / longSide : 1;
+  const targetW = Math.max(1, Math.round(image.width * scale));
+  const targetH = Math.max(1, Math.round(image.height * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas недоступен для сжатия изображения");
+  ctx.drawImage(image, 0, 0, targetW, targetH);
+
+  let quality = 0.9;
+  let resultBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+  while (resultBlob && resultBlob.size > TARGET_ROOM_FILE_BYTES && quality > 0.45) {
+    quality -= 0.08;
+    resultBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+  }
+  if (!resultBlob) {
+    throw new Error("Не удалось сжать изображение");
+  }
+  return new File([resultBlob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
+}
+
+async function persistAutoSavedProject() {
+  if (!selectedRoomFile || isRendering) return;
+  try {
+    const roomDataUrl = await fileToDataUrl(selectedRoomFile);
+    const payload = getCurrentProjectPayload(roomDataUrl);
+    localStorage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(payload));
+  } catch (error) {
+    console.warn("Autosave skipped:", error);
+  }
+}
+
+function startAutoSaveTimer() {
+  if (autosaveTimer) clearInterval(autosaveTimer);
+  autosaveTimer = setInterval(() => {
+    persistAutoSavedProject();
+  }, AUTOSAVE_INTERVAL_MS);
+}
+
+async function restoreAutoSavedProject() {
+  const raw = localStorage.getItem(AUTOSAVE_STORAGE_KEY);
+  if (!raw) return;
+  try {
+    const project = JSON.parse(raw);
+    if (!project?.room?.data_url) return;
+    const file = await dataUrlToFile(
+      project.room.data_url,
+      project.room.name || "room-autosave.jpg",
+      project.room.type || "image/jpeg"
+    );
+    applyRoomFromBlob(file, file.name);
+    sceneObjects = Array.isArray(project.scene_objects) ? project.scene_objects.map((o) => ({ ...o })) : [];
+    activeSceneObjectId = project.active_scene_object_id || sceneObjects[0]?.id || null;
+    manualLayerOrdering = Boolean(project.manual_layer_ordering);
+    selectedFurnitureId = project.selected_furniture_id || selectedFurnitureId;
+    selectedCategory = project.selected_category || selectedCategory;
+    searchQuery = project.search_query || searchQuery;
+    removeModeTool = project.remove_mode_tool || removeModeTool;
+    uidCounter = Math.max(uidCounter, ...sceneObjects.map((obj) => Number(String(obj.id || "").replace(/[^\d]/g, "")) || 1)) + 1;
+    renderCategoryTabs();
+    renderFurnitureGrid();
+    renderSceneObjects();
+    renderLayersPanel();
+    updateRenderButtonState();
+    resetResult();
+    clearMaskCanvas();
+    if (project.remove_mask_data_url) {
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("Не удалось загрузить autosave маску"));
+        img.src = project.remove_mask_data_url;
+      });
+      resizeMaskCanvas();
+      const ctx = removeMaskCanvas.getContext("2d");
+      if (ctx) {
+        ctx.clearRect(0, 0, removeMaskCanvas.width, removeMaskCanvas.height);
+        ctx.drawImage(img, 0, 0, removeMaskCanvas.width, removeMaskCanvas.height);
+        maskDirty = true;
+      }
+    }
+    updateRemoveButtonsState();
+    updateUndoRedoButtons();
+    setStatus("Восстановлен автосохранённый проект");
+  } catch (error) {
+    console.warn("Failed to restore autosave:", error);
+  }
 }
 
 function getHistorySnapshot() {
@@ -1130,19 +1282,37 @@ function handleRoomFileChange(event) {
     updateEmptyHint();
     return;
   }
-  pushHistory();
-  applyRoomFromBlob(file, file.name || "room.jpg");
-  sceneObjects = [];
-  activeSceneObjectId = null;
-  manualLayerOrdering = false;
-  coordsText.textContent = "Перетащи мебель на сцену";
-  resetResult();
-  renderSceneObjects();
-  renderLayersPanel();
-  updateRenderButtonState();
-  updateRemoveButtonsState();
-  updateUndoRedoButtons();
-  setStatus("Фото загружено. Перетащи мебель из каталога на сцену.");
+  (async () => {
+    try {
+      if (file.size > MAX_INPUT_ROOM_FILE_BYTES) {
+        setStatus("Файл слишком большой. Сжимаю изображение...");
+      }
+      const preparedFile = await compressRoomImageFile(file);
+      pushHistory();
+      applyRoomFromBlob(preparedFile, preparedFile.name || "room.jpg");
+      sceneObjects = [];
+      activeSceneObjectId = null;
+      manualLayerOrdering = false;
+      coordsText.textContent = "Перетащи мебель на сцену";
+      resetResult();
+      renderSceneObjects();
+      renderLayersPanel();
+      updateRenderButtonState();
+      updateRemoveButtonsState();
+      updateUndoRedoButtons();
+      if (preparedFile !== file) {
+        const kbBefore = Math.round(file.size / 1024);
+        const kbAfter = Math.round(preparedFile.size / 1024);
+        setStatus(`Фото сжато: ${kbBefore}KB -> ${kbAfter}KB. Перетащи мебель на сцену.`);
+      } else {
+        setStatus("Фото загружено. Перетащи мебель из каталога на сцену.");
+      }
+    } catch (error) {
+      console.error(error);
+      setStatus(`Ошибка загрузки фото: ${error.message}`, true);
+      roomImageInput.value = "";
+    }
+  })();
 }
 
 function handleCanvasClick(event) {
@@ -1390,26 +1560,8 @@ async function handleSaveProject() {
     setStatus("Сначала загрузи фото комнаты", true);
     return;
   }
-  const roomDataUrl = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Не удалось прочитать фото комнаты"));
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.readAsDataURL(selectedRoomFile);
-  });
-  const project = {
-    version: 1,
-    exported_at: new Date().toISOString(),
-    room: {
-      name: selectedRoomFile.name,
-      type: selectedRoomFile.type || "image/jpeg",
-      data_url: roomDataUrl,
-    },
-    scene_objects: sceneObjects.map((obj) => ({ ...obj })),
-    active_scene_object_id: activeSceneObjectId,
-    manual_layer_ordering: manualLayerOrdering,
-    selected_furniture_id: selectedFurnitureId,
-    remove_mask_data_url: maskDirty ? maskCanvasToDataUrl() : "",
-  };
+  const roomDataUrl = await fileToDataUrl(selectedRoomFile);
+  const project = getCurrentProjectPayload(roomDataUrl);
   const blob = new Blob([JSON.stringify(project, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -1427,40 +1579,9 @@ async function handleLoadProject(event) {
   try {
     const text = await file.text();
     const project = JSON.parse(text);
-    if (!project?.room?.data_url) throw new Error("Некорректный файл проекта (нет room.data_url)");
-    const response = await fetch(project.room.data_url);
-    if (!response.ok) throw new Error("Не удалось прочитать фото из проекта");
-    const blob = await response.blob();
     pushHistory();
-    applyRoomFromBlob(blob, project.room.name || "room-project.jpg");
-    sceneObjects = Array.isArray(project.scene_objects) ? project.scene_objects.map((o) => ({ ...o })) : [];
-    activeSceneObjectId = project.active_scene_object_id || sceneObjects[0]?.id || null;
-    manualLayerOrdering = Boolean(project.manual_layer_ordering);
-    selectedFurnitureId = project.selected_furniture_id || selectedFurnitureId;
-    uidCounter = Math.max(uidCounter, ...sceneObjects.map((obj) => Number(String(obj.id || "").replace(/[^\d]/g, "")) || 1)) + 1;
-    renderFurnitureGrid();
-    renderSceneObjects();
-    renderLayersPanel();
-    updateRenderButtonState();
-    resetResult();
-    clearMaskCanvas();
-    if (project.remove_mask_data_url) {
-      const img = new Image();
-      await new Promise((resolve, reject) => {
-        img.onload = () => resolve();
-        img.onerror = () => reject(new Error("Не удалось загрузить маску из проекта"));
-        img.src = project.remove_mask_data_url;
-      });
-      resizeMaskCanvas();
-      const ctx = removeMaskCanvas.getContext("2d");
-      if (ctx) {
-        ctx.clearRect(0, 0, removeMaskCanvas.width, removeMaskCanvas.height);
-        ctx.drawImage(img, 0, 0, removeMaskCanvas.width, removeMaskCanvas.height);
-        maskDirty = true;
-      }
-    }
-    updateRemoveButtonsState();
-    updateUndoRedoButtons();
+    await applyLoadedProject(project, false);
+    persistAutoSavedProject();
     setStatus("Проект загружен");
   } catch (error) {
     console.error(error);
@@ -1570,7 +1691,10 @@ hideCompare();
 renderLayersPanel();
 updateUndoRedoButtons();
 updateRemoveButtonsState();
-loadFurnitureCatalog().catch((error) => {
-  console.error(error);
-  setStatus(error.message, true);
-});
+loadFurnitureCatalog()
+  .then(() => restoreAutoSavedProject())
+  .then(() => startAutoSaveTimer())
+  .catch((error) => {
+    console.error(error);
+    setStatus(error.message, true);
+  });
